@@ -14,6 +14,7 @@ const ALLOWED_USER_IDS = new Set(
 );
 
 let chatId = null;
+let messageThreadId = null;
 let _offset  = 0;
 let _polling = false;
 let _liveMessageDepth = 0;
@@ -43,8 +44,24 @@ function resolveChatId() {
   return resolved != null ? String(resolved) : null;
 }
 
+// Forum/topic thread id — messages post into this topic when set.
+// user-config.telegramTopicId wins over TELEGRAM_TOPIC_ID env.
+function resolveTopicId() {
+  const fromEnv = nonEmptyChatId(process.env.TELEGRAM_TOPIC_ID);
+  let fromConfig = null;
+  try {
+    if (fs.existsSync(USER_CONFIG_PATH)) {
+      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      fromConfig = nonEmptyChatId(cfg.telegramTopicId);
+    }
+  } catch { /* resolveChatId already logs invalid-config warnings */ }
+  const resolved = fromConfig || fromEnv || null;
+  return resolved != null ? Number(resolved) : null;
+}
+
 function loadChatId() {
   chatId = resolveChatId();
+  messageThreadId = resolveTopicId();
 }
 
 function saveChatId(id) {
@@ -98,11 +115,16 @@ export function isEnabled() {
 
 async function postTelegram(method, body) {
   if (!TOKEN || !chatId) return null;
+  // editMessageText targets an existing message_id — thread id is irrelevant there.
+  const threadFields =
+    messageThreadId != null && method !== "editMessageText"
+      ? { message_thread_id: messageThreadId }
+      : {};
   try {
     const res = await fetch(`${BASE}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, ...body }),
+      body: JSON.stringify({ chat_id: chatId, ...threadFields, ...body }),
     });
     if (!res.ok) {
       const err = await res.text();
