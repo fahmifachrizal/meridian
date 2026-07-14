@@ -1388,7 +1388,9 @@ async function drainTelegramQueue() {
 }
 
 async function telegramHandler(msg) {
-  const text = msg?.text?.trim();
+  // In groups Telegram appends "@BotHandle" to slash commands (e.g. "/pool@MeridianFF_bot 2") —
+  // strip it before matching so command handlers below still fire.
+  const text = msg?.text?.trim().replace(/^(\/[a-zA-Z0-9_]+)@\S+/, "$1");
   if (!text) return;
   if (msg?.isCallback && text.startsWith("cfg:")) {
     try {
