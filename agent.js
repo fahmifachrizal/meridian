@@ -233,6 +233,9 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             attempt -= 1;
             continue;
           }
+          // Unclassified provider error — capture whatever detail the SDK gives us before
+          // it collapses to a terse e.message (e.g. "400 Provider returned error") upstream.
+          log("error", `Unhandled provider error: status=${error?.status ?? "?"} model=${usedModel} detail=${JSON.stringify(error?.error ?? error?.response?.data ?? {}).slice(0, 500)}`);
           throw error;
         }
         if (response.choices?.length) break;
