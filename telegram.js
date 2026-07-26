@@ -505,12 +505,14 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct }) {
+export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned }) {
   if (hasActiveLiveMessage()) return;
   const sign = pnlUsd >= 0 ? "+" : "";
+  const returnedStr = solReturned != null ? `\nReturned: ◎${Number(solReturned).toFixed(4)} SOL` : "";
   await sendHTML(
     `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)`
+    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)` +
+    returnedStr
   );
 }
 
@@ -520,6 +522,17 @@ export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOu
     `🔄 <b>Swapped</b> ${inputSymbol} → ${outputSymbol}\n` +
     `In: ${amountIn ?? "?"} | Out: ${amountOut ?? "?"}\n` +
     `Tx: <code>${tx?.slice(0, 16)}...</code>`
+  );
+}
+
+export async function notifyConfigChange(changes, { source } = {}) {
+  if (hasActiveLiveMessage()) return;
+  if (!Array.isArray(changes) || changes.length === 0) return;
+  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const lines = changes.map(({ key, from, to }) => `${key}: from ${from} to ${to}`);
+  await sendHTML(
+    `⚙️ <b>Config change</b>${source ? ` (${esc(source)})` : ""}\n` +
+    `<pre>${esc(lines.join("\n"))}</pre>`
   );
 }
 

@@ -22,6 +22,8 @@ import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsO
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../config.js";
 import { getRecentDecisions } from "../decision-log.js";
+import { pushSupabaseConfig } from "../supabase-config.js";
+import { recordDeploy, recordClose } from "../position-log.js";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
 import { REPO_ROOT, repoPath } from "../repo-root.js";
@@ -40,7 +42,7 @@ const TIMEFRAME_MINUTES = {
   "24h": 1440,
 };
 import { log, logAction } from "../logger.js";
-import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
+import { notifyDeploy, notifyClose, notifySwap, notifyConfigChange } from "../telegram.js";
 
 function numberOrNull(value) {
   const n = Number(value);
@@ -170,7 +172,28 @@ async function validateDeployPoolThresholds(args) {
     entry_tvl: tvl,
     entry_volume: numberOrNull(detail?.volume),
     entry_holders: numberOrNull(detail?.base_token_holders ?? detail?.token_x?.holders),
+    base_mint: baseMint,
+    launchpad: detail?.token_x?.launchpad || detail?.token_x?.launchpad_platform || detail?.base_token_launchpad || detail?.launchpad || null,
+    token_age_hours: detail?.token_x?.created_at
+      ? Math.floor((Date.now() - detail.token_x.created_at) / 3_600_000)
+      : null,
   };
+
+  // Audit + smart-wallet snapshot — best-effort, never blocks the deploy.
+  try {
+    if (baseMint) {
+      const tokenInfo = await getTokenInfo({ query: baseMint });
+      const audit = tokenInfo?.results?.[0]?.audit;
+      if (audit) {
+        entryMarketData.top10_pct = numberOrNull(audit.top_holders_pct);
+        entryMarketData.bot_holders_pct = numberOrNull(audit.bot_holders_pct);
+      }
+    }
+    const smartWallets = await checkSmartWalletsOnPool({ pool_address: args.pool_address });
+    entryMarketData.smart_wallets_count = Array.isArray(smartWallets?.in_pool) ? smartWallets.in_pool.length : null;
+  } catch (error) {
+    log("deploy_audit_warn", `Could not fetch entry audit snapshot: ${error.message}`);
+  }
 
   return { pass: true, entryMarketData };
 }
@@ -519,12 +542,14 @@ const toolMap = {
     }
 
     // Apply to live config immediately after the persisted config is known-good.
+    const configChanges = [];
     for (const [key, val] of Object.entries(applied)) {
       if (key.startsWith("_")) continue;
       const [section, field] = CONFIG_MAP[key];
       const before = config[section][field];
       config[section][field] = val;
       log("config", `update_config: config.${section}.${field} ${before} → ${val} (verify: ${config[section][field]})`);
+      if (before !== val) configChanges.push({ key, from: before, to: val });
     }
     if (
       applied.binsBelow != null ||
@@ -561,6 +586,8 @@ const toolMap = {
     }
     userConfig._lastAgentTune = new Date().toISOString();
     fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+    pushSupabaseConfig().catch(() => {});
+    notifyConfigChange(configChanges, { source: reason || "update_config" }).catch(() => {});
 
     // Restart cron jobs if intervals changed
     const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null || applied.pnlPollIntervalSec != null;
@@ -679,8 +706,82 @@ export async function executeTool(name, args) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
         notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
+        recordDeploy({
+          position_id: result.position,
+          pool_address: result.pool ?? args.pool_address ?? null,
+          pool_name: result.pool_name ?? args.pool_name ?? null,
+          base_mint: args.base_mint ?? null,
+          strategy: result.strategy ?? args.strategy ?? null,
+          bin_step: result.bin_step ?? null,
+          base_fee: result.base_fee ?? null,
+          lower_bin: result.bin_range?.min ?? null,
+          upper_bin: result.bin_range?.max ?? null,
+          active_bin: result.bin_range?.active ?? null,
+          lower_price: result.price_range?.min ?? null,
+          upper_price: result.price_range?.max ?? null,
+          price: result.range_coverage?.active_price ?? null,
+          mcap: args.entry_mcap ?? null,
+          tvl: args.entry_tvl ?? null,
+          volume: args.entry_volume ?? null,
+          holders: args.entry_holders ?? null,
+          top10_pct: args.top10_pct ?? null,
+          bot_holders_pct: args.bot_holders_pct ?? null,
+          smart_wallets_count: args.smart_wallets_count ?? null,
+          launchpad: args.launchpad ?? null,
+          token_age_hours: args.token_age_hours ?? null,
+          volatility: args.volatility ?? null,
+          fee_tvl_ratio: args.fee_tvl_ratio ?? null,
+          organic_score: args.organic_score ?? null,
+          amount_sol: args.amount_y ?? args.amount_sol ?? null,
+          amount_x: result.amount_x ?? args.amount_x ?? null,
+          amount_y: result.amount_y ?? args.amount_y ?? null,
+          initial_value_usd: args.initial_value_usd ?? null,
+          downside_coverage_pct: result.range_coverage?.downside_pct ?? null,
+          upside_coverage_pct: result.range_coverage?.upside_pct ?? null,
+          total_width_pct: result.range_coverage?.width_pct ?? null,
+          total_bins: (result.bin_range?.min != null && result.bin_range?.max != null) ? (result.bin_range.max - result.bin_range.min + 1) : null,
+          wide_range: result.wide_range ?? null,
+          tx_signatures: JSON.stringify(result.txs || []),
+        }).catch(() => {});
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, solReturned: result.sol_returned }).catch(() => {});
+        recordClose({
+          position_id: args.position_address,
+          pool_address: result.pool ?? null,
+          pool_name: result.pool_name ?? null,
+          base_mint: result.base_mint ?? null,
+          strategy: result.strategy ?? null,
+          bin_step: result.bin_step ?? null,
+          lower_bin: result.bin_range?.min ?? null,
+          upper_bin: result.bin_range?.max ?? null,
+          mcap: result.exit_mcap ?? null,
+          tvl: result.exit_tvl ?? null,
+          volume: result.exit_volume ?? null,
+          top10_pct: result.top10_pct ?? null,
+          bot_holders_pct: result.bot_holders_pct ?? null,
+          smart_wallets_count: result.smart_wallets_count ?? null,
+          launchpad: result.launchpad ?? null,
+          token_age_hours: result.token_age_hours ?? null,
+          volatility: result.volatility ?? null,
+          fee_tvl_ratio: result.fee_tvl_ratio ?? null,
+          organic_score: result.organic_score ?? null,
+          tx_signatures: JSON.stringify([...(result.claim_txs || []), ...(result.close_txs || [])]),
+          pnl_usd: result.pnl_usd ?? null,
+          pnl_pct: result.pnl_pct ?? null,
+          pnl_true_usd: result.pnl_true_usd ?? null,
+          fees_earned_usd: result.fees_earned_usd ?? null,
+          fees_earned_sol: result.fees_earned_sol ?? null,
+          sol_returned: result.sol_returned ?? null,
+          final_value_usd: result.final_value_usd ?? null,
+          initial_value_usd: result.initial_value_usd ?? null,
+          minutes_held: result.minutes_held ?? null,
+          minutes_out_of_range: result.minutes_out_of_range ?? null,
+          minutes_in_range: result.minutes_in_range ?? null,
+          range_efficiency: (result.minutes_held > 0 && result.minutes_in_range != null)
+            ? parseFloat(((result.minutes_in_range / result.minutes_held) * 100).toFixed(1))
+            : null,
+          close_reason: result.close_reason ?? args.reason ?? null,
+        }).catch(() => {});
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;

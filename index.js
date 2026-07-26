@@ -34,6 +34,7 @@ import { stageSignals } from "./signal-tracker.js";
 import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
+import { pullSupabaseConfig, startSupabaseConfigBackgroundSync } from "./supabase-config.js";
 
 import { REPO_ROOT, repoPath } from "./repo-root.js";
 
@@ -53,6 +54,8 @@ if (isMain) {
   ensureAgentId();
   bootstrapHiveMind().catch((error) => log("hivemind_warn", `Bootstrap failed: ${error.message}`));
   startHiveMindBackgroundSync();
+  pullSupabaseConfig().catch((error) => log("supabase_config_warn", `Bootstrap pull failed: ${error.message}`));
+  startSupabaseConfigBackgroundSync();
 }
 
 const TP_PCT = config.management.takeProfitPct;
