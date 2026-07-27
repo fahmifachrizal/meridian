@@ -23,6 +23,7 @@ import {
   notifyOutOfRange,
   isEnabled as telegramEnabled,
   createLiveMessage,
+  escapeHtml,
 } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state.js";
@@ -182,13 +183,13 @@ async function executeManagementActions(actionPositions, actionMap, { liveMessag
       const res = await executeTool("close_position", { position_address: p.position, reason }).catch(e => ({ error: e.message }));
       const ok = res?.success !== false && !res?.error && !res?.blocked;
       await liveMessage?.toolFinish("close_position", res, ok);
-      lines.push(`${p.pair}: ${ok ? `closed (${reason})` : `close FAILED — ${res?.error || res?.reason || "unknown"}`}`);
+      lines.push(escapeHtml(`${p.pair}: ${ok ? `closed (${reason})` : `close FAILED — ${res?.error || res?.reason || "unknown"}`}`));
     } else if (act.action === "CLAIM") {
       await liveMessage?.toolStart("claim_fees");
       const res = await executeTool("claim_fees", { position_address: p.position }).catch(e => ({ error: e.message }));
       const ok = res?.success !== false && !res?.error && !res?.blocked;
       await liveMessage?.toolFinish("claim_fees", res, ok);
-      lines.push(`${p.pair}: ${ok ? "fees claimed" : `claim FAILED — ${res?.error || res?.reason || "unknown"}`}`);
+      lines.push(escapeHtml(`${p.pair}: ${ok ? "fees claimed" : `claim FAILED — ${res?.error || res?.reason || "unknown"}`}`));
     }
   }
 
@@ -217,7 +218,7 @@ After evaluating, write a brief one-line result per position.
       onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
       onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
     });
-    if (content) lines.push(content);
+    if (content) lines.push(escapeHtml(content));
   }
 
   return lines.join("\n");
@@ -235,7 +236,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   try {
     if (!silent && telegramEnabled()) {
-      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
+      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...", { parseMode: "HTML" });
     }
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
@@ -298,23 +299,40 @@ export async function runManagementCycle({ silent = false } = {}) {
     const totalValue = positionData.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
     const totalUnclaimed = positionData.reduce((s, p) => s + (p.unclaimed_fees_usd ?? 0), 0);
 
+    // Table layout: pool name as an HTML-bold heading, then a monospace
+    // <pre> block with fixed-width labels (Telegram's HTML parse_mode
+    // guarantees <pre> renders as monospace regardless of client/font).
+    const TABLE_LABEL_WIDTH = 11;
+    const tableRow = (label, value) => `${label.padEnd(TABLE_LABEL_WIDTH)}${value}`;
+
     const reportLines = positionData.map((p) => {
       const act = actionMap.get(p.position);
       const inRange = p.in_range ? "🟢 IN" : `🔴 OOR ${p.minutes_out_of_range ?? 0}m`;
       const val = config.management.solMode ? `◎${p.total_value_usd ?? "?"}` : `$${p.total_value_usd ?? "?"}`;
       const unclaimed = config.management.solMode ? `◎${p.unclaimed_fees_usd ?? "?"}` : `$${p.unclaimed_fees_usd ?? "?"}`;
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
-      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
-      if (p.instruction) line += `\nNote: "${p.instruction}"`;
-      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
-      if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
+
+      const table = [
+        tableRow("Age", `${p.age_minutes ?? "?"}m`),
+        tableRow("Value", val),
+        tableRow("Unclaimed", unclaimed),
+        tableRow("PnL", `${p.pnl_pct ?? "?"}%`),
+        tableRow("Yield", `${p.fee_per_tvl_24h ?? "?"}%`),
+        tableRow("Status", inRange),
+        tableRow("Action", statusLabel),
+      ].join("\n");
+
+      let line = `<b>${escapeHtml(p.pair)}</b>\n<pre>${escapeHtml(table)}</pre>`;
+      if (p.instruction) line += `\nNote: "${escapeHtml(p.instruction)}"`;
+      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${escapeHtml(act.reason)}`;
+      if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${escapeHtml(act.reason)}`;
       if (act.action === "CLAIM") line += `\n→ Claiming fees`;
       return line;
     });
 
     const needsAction = [...actionMap.values()].filter(a => a.action !== "STAY");
     const actionSummary = needsAction.length > 0
-      ? needsAction.map(a => a.action === "INSTRUCTION" ? "EVAL instruction" : `${a.action}${a.reason ? ` (${a.reason})` : ""}`).join(", ")
+      ? needsAction.map(a => a.action === "INSTRUCTION" ? "EVAL instruction" : `${a.action}${a.reason ? ` (${escapeHtml(a.reason)})` : ""}`).join(", ")
       : "no action";
 
     const cur = config.management.solMode ? "◎" : "$";
@@ -344,13 +362,13 @@ export async function runManagementCycle({ silent = false } = {}) {
     }
   } catch (error) {
     log("cron_error", `Management cycle failed: ${error.message}`);
-    mgmtReport = `Management cycle failed: ${error.message}`;
+    mgmtReport = `Management cycle failed: ${escapeHtml(error.message)}`;
   } finally {
     _managementBusy = false;
     if (!silent && telegramEnabled()) {
       if (mgmtReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
-        else sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
+        else sendHTML(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
       }
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
@@ -956,7 +974,7 @@ function formatCandidates(candidates) {
   ].join("\n");
 }
 
-function getDeterministicCloseRule(position, managementConfig) {
+export function getDeterministicCloseRule(position, managementConfig) {
   const tracked = getTrackedPosition(position.position);
   const pnlSuspect = (() => {
     // Couldn't-price-this-tick flag (e.g. Jupiter outage) — never act on PnL rules.
@@ -1011,7 +1029,7 @@ function getDeterministicCloseRule(position, managementConfig) {
   if (
     position.fee_per_tvl_24h != null &&
     position.fee_per_tvl_24h < managementConfig.minFeePerTvl24h &&
-    (position.age_minutes ?? 0) >= 60
+    (position.age_minutes ?? 0) >= managementConfig.minAgeBeforeYieldCheck
   ) {
     return { action: "CLOSE", rule: 5, reason: "low yield" };
   }
