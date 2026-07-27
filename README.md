@@ -705,6 +705,122 @@ flowchart TD
     STATE -.->|"feeds next cycle"| M1
 ```
 
+### Market regime state machine
+
+Re-evaluated once per screening cycle (30 min) against that cycle's candidate
+set — no debounce, so a borderline candidate set can flip regimes cycle to
+cycle. Every transition auto-applies its target profile via
+`applyConfigChanges()` (strategy, screening thresholds, exit rules, sizing),
+persists to `user-config.json` + Supabase, and logs a `regime_change`
+decision + pinned lesson.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Normal: first boot (default active)
+
+    Slow --> Normal: median degenScore >= slowCutoff (15)
+    Normal --> Slow: median degenScore < slowCutoff (15)
+    Normal --> Hot: median degenScore >= hotCutoff (45)
+    Hot --> Normal: median degenScore < hotCutoff (45)
+    Slow --> Hot: score jumps >= hotCutoff in one cycle
+    Hot --> Slow: score drops < slowCutoff in one cycle
+
+    state Slow {
+        direction LR
+        [*] --> S_applied
+        S_applied: strategy=spot, minVolume=10000\nstopLoss=-10%, takeProfit=3%\nsize=0.35 SOL / 25%
+    }
+    state Normal {
+        direction LR
+        [*] --> N_applied
+        N_applied: strategy=bid_ask, minVolume=2000\nstopLoss=-15%, takeProfit=5%\nsize=0.5 SOL / 35%
+    }
+    state Hot {
+        direction LR
+        [*] --> H_applied
+        H_applied: strategy=bid_ask, minVolume=1000\nstopLoss=-25%, takeProfit=10%\nsize=0.6 SOL / 50%
+    }
+```
+
+### Position lifecycle
+
+Covers every path a position can take from deploy attempt to close — the
+same deterministic rules from `getDeterministicCloseRule()` plus the 7 guards
+added this session. Claiming fees is a side-action, not a state transition
+(a position can claim any number of times while `Open`).
+
+```mermaid
+stateDiagram-v2
+    [*] --> Deploying: SCREENER agentLoop calls deploy_position
+
+    Deploying --> Rejected: guard blocks\n(repeat-deploy cooldown, TVL decline,\ntoken-age window, hysteresis)
+    Rejected --> [*]
+
+    Deploying --> Open: runSafetyChecks passes\n(guard #7 may taper size + tighten stop-loss)
+
+    state Open {
+        [*] --> InRange
+        InRange --> OutOfRange: active_bin leaves [lower_bin, upper_bin]
+        OutOfRange --> InRange: price re-enters range
+        InRange --> InRange: claim_fees (no state change)
+        OutOfRange --> OutOfRange: claim_fees (no state change)
+    }
+
+    InRange --> Closed_TakeProfit: pnl_pct >= takeProfitPct
+    InRange --> Closed_LowYield: fee_per_tvl_24h < minFeePerTvl24h\nAND age >= minAgeBeforeYieldCheck
+    InRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
+    OutOfRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
+    OutOfRange --> Closed_FastExit: pnl_pct <= stopLossPct * fastExitFraction\n(guard #4 — fires before the full OOR wait)
+    OutOfRange --> Closed_PumpedAbove: active_bin > upper_bin + outOfRangeBinsToClose
+    OutOfRange --> Closed_OORWait: minutes_out_of_range >= outOfRangeWaitMinutes
+    Open --> Closed_Manual: /close command, or LLM decision\n(position instruction condition met)
+
+    Closed_TakeProfit --> Recorded
+    Closed_LowYield --> Recorded
+    Closed_StopLoss --> Recorded
+    Closed_FastExit --> Recorded
+    Closed_PumpedAbove --> Recorded
+    Closed_OORWait --> Recorded
+    Closed_Manual --> Recorded
+
+    Recorded: recordPerformance() -> lessons.js + pool-memory.json
+    Recorded --> [*]
+```
+
+### Regime change ↔ open positions
+
+How a regime flip touches both the *next* deploy and *already-open*
+positions in the same pass — there is no per-position snapshotting, so a
+downshift (e.g. Hot → Slow) retroactively tightens exit rules on positions
+opened under the old regime.
+
+```mermaid
+sequenceDiagram
+    participant SC as Screening Cron (30m)
+    participant Run as runScreeningCycle
+    participant Reg as classifyRegime + regime library
+    participant Cfg as applyConfigChanges
+    participant MC as Management Cron (10m)
+    participant Pos as Open Positions
+
+    SC->>Run: trigger
+    Run->>Run: getTopCandidates()
+    Run->>Reg: classifyRegime(candidates)
+    alt regime changed, e.g. Normal to Hot
+        Reg->>Cfg: applyConfigChanges(hot.changes)
+        Cfg->>Cfg: mutate config.* + persist + push Supabase
+        Cfg-->>Run: decision-log "regime_change" + lesson
+        Note over Run: deployAmount/strategy recomputed AFTER<br/>this point — same-cycle effect
+        Run->>Run: deploy using Hot strategy/size/thresholds
+    else regime unchanged
+        Run->>Run: deploy using current regime's config
+    end
+
+    MC->>Pos: getMyPositions() (independent 10m cadence)
+    Pos->>Pos: read config.management.stopLossPct/<br/>takeProfitPct fresh, every tick
+    Note over Pos: Retroactive — a position opened under the<br/>OLD regime is now evaluated against the<br/>NEW regime's exit rules
+```
+
 ### File map
 
 ```
