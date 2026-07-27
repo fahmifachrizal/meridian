@@ -98,6 +98,14 @@ export const config = {
     blockedLaunchpads:  u.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
+    // Rejection hysteresis (guard #2) — repeated borderline rejections tighten the bar
+    hysteresisRejectionCount: u.hysteresisRejectionCount ?? 2,
+    hysteresisWindowHours:    u.hysteresisWindowHours    ?? 24,
+    hysteresisMarginPct:      u.hysteresisMarginPct      ?? 5,
+    // Token-age deploy window (guard #6) — early momentum, then cooldown, then reopen
+    tokenAgeWindowEnabled:    u.tokenAgeWindowEnabled    ?? true,
+    tokenEarlyWindowMaxHours: u.tokenEarlyWindowMaxHours ?? 6,
+    tokenCooldownHours:       u.tokenCooldownHours       ?? 24,
   },
 
   // ─── Position Management ────────────────
@@ -111,7 +119,7 @@ export const config = {
     oorCooldownTriggerCount: u.oorCooldownTriggerCount ?? 3,
     oorCooldownHours:       u.oorCooldownHours       ?? 12,
     repeatDeployCooldownEnabled: u.repeatDeployCooldownEnabled ?? true,
-    repeatDeployCooldownTriggerCount: u.repeatDeployCooldownTriggerCount ?? 3,
+    repeatDeployCooldownTriggerCount: u.repeatDeployCooldownTriggerCount ?? 2,
     repeatDeployCooldownHours: u.repeatDeployCooldownHours ?? 12,
     repeatDeployCooldownScope: u.repeatDeployCooldownScope ?? "token", // pool | token | both
     repeatDeployCooldownMinFeeEarnedPct: u.repeatDeployCooldownMinFeeEarnedPct ?? u.repeatDeployCooldownMinFeeYieldPct ?? 0,
@@ -120,6 +128,22 @@ export const config = {
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
+    // Pre-deploy TVL/mcap decline check (guard #3)
+    maxTvlSnapshotAgeHours:    u.maxTvlSnapshotAgeHours    ?? 4,
+    maxTvlDeclinePctForDeploy: u.maxTvlDeclinePctForDeploy ?? 20,
+    // Fast OOR + negative-PnL exit (guard #4)
+    fastExitOnOorEnabled:    u.fastExitOnOorEnabled    ?? true,
+    fastExitStopLossFraction: u.fastExitStopLossFraction ?? 0.5,
+    // AVOID-tagged pinned lessons (guard #5)
+    avoidPinThresholdPct: u.avoidPinThresholdPct ?? -10,
+    avoidPinMinDeploys:   u.avoidPinMinDeploys   ?? 2,
+    // Repeat-deploy size taper + tightened stop-loss (guard #7) — a 2nd+ deploy
+    // into the same pool while it's still within the early-momentum window
+    // (screening.tokenEarlyWindowMaxHours) is strictly higher variance than the
+    // 1st, so it risks less capital and gets cut faster if wrong.
+    repeatDeploySizeTaperEnabled: u.repeatDeploySizeTaperEnabled ?? true,
+    repeatDeploySizeTaperPct: Array.isArray(u.repeatDeploySizeTaperPct) ? u.repeatDeploySizeTaperPct : [0.6, 0.4],
+    repeatDeployStopLossFraction: u.repeatDeployStopLossFraction ?? 0.5,
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
@@ -228,6 +252,16 @@ export const config = {
     targetLiquidity: Number(u.degenTargetLiquidity ?? 20000),
   },
 
+  // ─── Market regime detection (decision-tree config auto-fork) ──
+  regime: {
+    enabled: u.regimeDetectionEnabled ?? true,
+    // classifyRegime()'s median-degenScore cutoffs — below slowCutoff -> "slow",
+    // at/above hotCutoff -> "hot", otherwise "normal". Re-evaluated once per
+    // screening cycle against that cycle's getTopCandidates() result.
+    slowCutoff: Number(u.regimeSlowCutoff ?? 15),
+    hotCutoff: Number(u.regimeHotCutoff ?? 45),
+  },
+
   // ─── GMGN (fee source for minTokenFeesSol gate) ──────────────
   gmgn: {
     apiKey: nonEmptyString(gmgnUserConfig.apiKey, u.gmgnApiKey, process.env.GMGN_API_KEY),
@@ -322,6 +356,12 @@ export function reloadScreeningThresholds() {
     if (fresh.maxBotHoldersPct  != null) s.maxBotHoldersPct = fresh.maxBotHoldersPct;
     if (fresh.allowedLaunchpads !== undefined) s.allowedLaunchpads = fresh.allowedLaunchpads;
     if (fresh.blockedLaunchpads !== undefined) s.blockedLaunchpads = fresh.blockedLaunchpads;
+    if (fresh.hysteresisRejectionCount != null) s.hysteresisRejectionCount = fresh.hysteresisRejectionCount;
+    if (fresh.hysteresisWindowHours    != null) s.hysteresisWindowHours    = fresh.hysteresisWindowHours;
+    if (fresh.hysteresisMarginPct      != null) s.hysteresisMarginPct      = fresh.hysteresisMarginPct;
+    if (fresh.tokenAgeWindowEnabled    !== undefined) s.tokenAgeWindowEnabled    = fresh.tokenAgeWindowEnabled;
+    if (fresh.tokenEarlyWindowMaxHours != null) s.tokenEarlyWindowMaxHours = fresh.tokenEarlyWindowMaxHours;
+    if (fresh.tokenCooldownHours       != null) s.tokenCooldownHours       = fresh.tokenCooldownHours;
     const minBinsBelow = numericConfig(fresh.minBinsBelow) ?? config.strategy.minBinsBelow;
     const maxBinsBelow = numericConfig(fresh.maxBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.maxBinsBelow;
     const defaultBinsBelow = numericConfig(fresh.defaultBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.defaultBinsBelow ?? maxBinsBelow;

@@ -14,7 +14,7 @@ import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
 import { setPositionInstruction } from "../state.js";
 
-import { getPoolMemory, addPoolNote } from "../pool-memory.js";
+import { getPoolMemory, addPoolNote, recordTvlObservation, getPriorTvlObservation } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
@@ -116,6 +116,25 @@ async function validateDeployPoolThresholds(args) {
     };
   }
 
+  // Guard #3: reject a pool whose TVL is actively collapsing right now,
+  // even if the absolute value still clears minTvl. Fails open if there's
+  // no recent-enough observation to compare against.
+  const maxSnapshotAgeHours = numberOrNull(config.management.maxTvlSnapshotAgeHours);
+  const maxTvlDeclinePct = numberOrNull(config.management.maxTvlDeclinePctForDeploy);
+  if (maxSnapshotAgeHours != null && maxTvlDeclinePct != null) {
+    const priorObservation = getPriorTvlObservation(args.pool_address, maxSnapshotAgeHours);
+    if (priorObservation && priorObservation.tvl > 0) {
+      const declinePct = ((priorObservation.tvl - tvl) / priorObservation.tvl) * 100;
+      if (declinePct > maxTvlDeclinePct) {
+        return {
+          pass: false,
+          reason: `Pool TVL declining ${declinePct.toFixed(1)}% since ${priorObservation.ts} ($${priorObservation.tvl} → $${tvl}) — exceeds maxTvlDeclinePctForDeploy ${maxTvlDeclinePct}%.`,
+        };
+      }
+    }
+  }
+  recordTvlObservation(args.pool_address, tvl);
+
   const feeActiveTvlRatio = poolDetailFeeActiveTvlRatio(detail);
   const minFeeActiveTvlRatio = numberOrNull(config.screening.minFeeActiveTvlRatio);
   if (
@@ -176,6 +195,11 @@ async function validateDeployPoolThresholds(args) {
     launchpad: detail?.token_x?.launchpad || detail?.token_x?.launchpad_platform || detail?.base_token_launchpad || detail?.launchpad || null,
     token_age_hours: detail?.token_x?.created_at
       ? Math.floor((Date.now() - detail.token_x.created_at) / 3_600_000)
+      : null,
+    // Pool's own age, not the token's mint date — for a pump.fun graduation
+    // the pool can be created weeks after the token itself (see guard #6/#7).
+    pool_age_hours: (detail?.pool_created_at ?? detail?.token_x?.created_at)
+      ? (Date.now() - (detail.pool_created_at ?? detail.token_x.created_at)) / 3_600_000
       : null,
   };
 
@@ -265,6 +289,287 @@ function normalizeConfigValue(key, value) {
   if (arrayKeys.has(key)) return coerceStringArray(value, key);
   if (stringKeys.has(key)) return coerceString(value, key);
   return coerceFiniteNumber(value, key);
+}
+
+// Flat key → config section mapping (covers everything in config.js).
+// Shared by update_config (LLM/CLI-driven) and applyConfigChanges' other
+// internal callers (e.g. market-regime auto-switching) — hoisted to module
+// level so it's built once, not per call.
+const CONFIG_MAP = {
+  // screening
+  minFeeActiveTvlRatio: ["screening", "minFeeActiveTvlRatio"],
+  excludeHighSupplyConcentration: ["screening", "excludeHighSupplyConcentration"],
+  minTvl: ["screening", "minTvl"],
+  maxTvl: ["screening", "maxTvl"],
+  minVolume: ["screening", "minVolume"],
+  minOrganic: ["screening", "minOrganic"],
+  minQuoteOrganic: ["screening", "minQuoteOrganic"],
+  minHolders: ["screening", "minHolders"],
+  minMcap: ["screening", "minMcap"],
+  maxMcap: ["screening", "maxMcap"],
+  minBinStep: ["screening", "minBinStep"],
+  maxBinStep: ["screening", "maxBinStep"],
+  timeframe: ["screening", "timeframe"],
+  category: ["screening", "category"],
+  minTokenFeesSol: ["screening", "minTokenFeesSol"],
+  useDiscordSignals: ["screening", "useDiscordSignals"],
+  discordSignalMode: ["screening", "discordSignalMode"],
+  avoidPvpSymbols: ["screening", "avoidPvpSymbols"],
+  blockPvpSymbols: ["screening", "blockPvpSymbols"],
+  maxBotHoldersPct: ["screening", "maxBotHoldersPct"],
+  maxTop10Pct: ["screening", "maxTop10Pct"],
+  allowedLaunchpads: ["screening", "allowedLaunchpads"],
+  blockedLaunchpads: ["screening", "blockedLaunchpads"],
+  minTokenAgeHours: ["screening", "minTokenAgeHours"],
+  maxTokenAgeHours: ["screening", "maxTokenAgeHours"],
+  minFeePerTvl24h: ["management", "minFeePerTvl24h"],
+  loneCandidateMinDegen: ["screening", "loneCandidateMinDegen"],
+  // guard #2 — rejection hysteresis
+  hysteresisRejectionCount: ["screening", "hysteresisRejectionCount"],
+  hysteresisWindowHours: ["screening", "hysteresisWindowHours"],
+  hysteresisMarginPct: ["screening", "hysteresisMarginPct"],
+  // guard #6 — token-age deploy window
+  tokenAgeWindowEnabled: ["screening", "tokenAgeWindowEnabled"],
+  tokenEarlyWindowMaxHours: ["screening", "tokenEarlyWindowMaxHours"],
+  tokenCooldownHours: ["screening", "tokenCooldownHours"],
+  // management
+  minClaimAmount: ["management", "minClaimAmount"],
+  autoSwapAfterClaim: ["management", "autoSwapAfterClaim"],
+  autoSwapRetryAttempts: ["management", "autoSwapRetryAttempts"],
+  autoSwapRetryDelayMs: ["management", "autoSwapRetryDelayMs"],
+  outOfRangeBinsToClose: ["management", "outOfRangeBinsToClose"],
+  outOfRangeWaitMinutes: ["management", "outOfRangeWaitMinutes"],
+  oorCooldownTriggerCount: ["management", "oorCooldownTriggerCount"],
+  oorCooldownHours: ["management", "oorCooldownHours"],
+  repeatDeployCooldownEnabled: ["management", "repeatDeployCooldownEnabled"],
+  repeatDeployCooldownTriggerCount: ["management", "repeatDeployCooldownTriggerCount"],
+  repeatDeployCooldownHours: ["management", "repeatDeployCooldownHours"],
+  repeatDeployCooldownScope: ["management", "repeatDeployCooldownScope"],
+  repeatDeployCooldownMinFeeEarnedPct: ["management", "repeatDeployCooldownMinFeeEarnedPct"],
+  minVolumeToRebalance: ["management", "minVolumeToRebalance"],
+  stopLossPct: ["management", "stopLossPct"],
+  takeProfitPct: ["management", "takeProfitPct"],
+  takeProfitFeePct: ["management", "takeProfitPct"],
+  trailingTakeProfit: ["management", "trailingTakeProfit"],
+  trailingTriggerPct: ["management", "trailingTriggerPct"],
+  trailingDropPct: ["management", "trailingDropPct"],
+  pnlSanityMaxDiffPct: ["management", "pnlSanityMaxDiffPct"],
+  // guard #3 — pre-deploy TVL/mcap decline check
+  maxTvlSnapshotAgeHours: ["management", "maxTvlSnapshotAgeHours"],
+  maxTvlDeclinePctForDeploy: ["management", "maxTvlDeclinePctForDeploy"],
+  // guard #4 — fast OOR + negative-PnL exit
+  fastExitOnOorEnabled: ["management", "fastExitOnOorEnabled"],
+  fastExitStopLossFraction: ["management", "fastExitStopLossFraction"],
+  // guard #5 — AVOID-tagged pinned lessons
+  avoidPinThresholdPct: ["management", "avoidPinThresholdPct"],
+  avoidPinMinDeploys: ["management", "avoidPinMinDeploys"],
+  // guard #7 — repeat-deploy size taper + tightened stop-loss
+  repeatDeploySizeTaperEnabled: ["management", "repeatDeploySizeTaperEnabled"],
+  repeatDeploySizeTaperPct: ["management", "repeatDeploySizeTaperPct"],
+  repeatDeployStopLossFraction: ["management", "repeatDeployStopLossFraction"],
+  // market regime detection (decision-tree config auto-fork)
+  regimeDetectionEnabled: ["regime", "enabled"],
+  regimeSlowCutoff: ["regime", "slowCutoff"],
+  regimeHotCutoff: ["regime", "hotCutoff"],
+  // pnl poller
+  pnlConfirmTicks: ["pnl", "confirmTicks"],
+  // opportunity poller (interval/enabled changes apply on next restart)
+  opportunityPollEnabled: ["opportunity", "enabled"],
+  opportunityPollIntervalSec: ["opportunity", "pollIntervalSec"],
+  opportunityPollLimit: ["opportunity", "limit"],
+  opportunityMinScore: ["opportunity", "minScore"],
+  opportunitySmartWalletBonus: ["opportunity", "smartWalletScoreBonus"],
+  degenTargetVolRatio: ["opportunity", "targetVolRatio"],
+  degenTargetLpCount: ["opportunity", "targetLpCount"],
+  degenTargetFeeRatio: ["opportunity", "targetFeeRatio"],
+  degenTargetLiquidity: ["opportunity", "targetLiquidity"],
+  solMode: ["management", "solMode"],
+  minSolToOpen: ["management", "minSolToOpen"],
+  deployAmountSol: ["management", "deployAmountSol"],
+  gasReserve: ["management", "gasReserve"],
+  positionSizePct: ["management", "positionSizePct"],
+  minAgeBeforeYieldCheck: ["management", "minAgeBeforeYieldCheck"],
+  // risk
+  maxPositions: ["risk", "maxPositions"],
+  maxDeployAmount: ["risk", "maxDeployAmount"],
+  // schedule
+  managementIntervalMin: ["schedule", "managementIntervalMin"],
+  screeningIntervalMin: ["schedule", "screeningIntervalMin"],
+  healthCheckIntervalMin: ["schedule", "healthCheckIntervalMin"],
+  // models
+  managementModel: ["llm", "managementModel"],
+  screeningModel: ["llm", "screeningModel"],
+  generalModel: ["llm", "generalModel"],
+  temperature: ["llm", "temperature"],
+  maxTokens: ["llm", "maxTokens"],
+  maxSteps: ["llm", "maxSteps"],
+  // strategy
+  strategy: ["strategy", "strategy"],
+  binsBelow: ["strategy", "maxBinsBelow", ["maxBinsBelow"]],
+  minBinsBelow: ["strategy", "minBinsBelow"],
+  maxBinsBelow: ["strategy", "maxBinsBelow"],
+  defaultBinsBelow: ["strategy", "defaultBinsBelow"],
+  // hivemind
+  hiveMindUrl: ["hiveMind", "url"],
+  hiveMindApiKey: ["hiveMind", "apiKey"],
+  agentId: ["hiveMind", "agentId"],
+  hiveMindPullMode: ["hiveMind", "pullMode"],
+  // meridian api / relay
+  publicApiKey: ["api", "publicApiKey"],
+  agentMeridianApiUrl: ["api", "url"],
+  lpAgentRelayEnabled: ["api", "lpAgentRelayEnabled"],
+  // pnl fetcher / poller
+  pnlSource: ["pnl", "source", ["pnlSource"]],
+  pnlRpcUrl: ["pnl", "rpcUrl", ["pnlRpcUrl"]],
+  pnlPollIntervalSec: ["pnl", "pollIntervalSec", ["pnlPollIntervalSec"]],
+  pnlDepositCacheTtlSec: ["pnl", "depositCacheTtlSec", ["pnlDepositCacheTtlSec"]],
+  // gmgn fee source
+  gmgnFeeSource: ["gmgn", "feeSource", ["gmgnFeeSource"]],
+  gmgnApiKey: ["gmgn", "apiKey", ["gmgnApiKey"]],
+  // chart indicators
+  chartIndicatorsEnabled: ["indicators", "enabled", ["chartIndicators", "enabled"]],
+  indicatorEntryPreset: ["indicators", "entryPreset", ["chartIndicators", "entryPreset"]],
+  indicatorExitPreset: ["indicators", "exitPreset", ["chartIndicators", "exitPreset"]],
+  rsiLength: ["indicators", "rsiLength", ["chartIndicators", "rsiLength"]],
+  indicatorIntervals: ["indicators", "intervals", ["chartIndicators", "intervals"]],
+  indicatorCandles: ["indicators", "candles", ["chartIndicators", "candles"]],
+  rsiOversold: ["indicators", "rsiOversold", ["chartIndicators", "rsiOversold"]],
+  rsiOverbought: ["indicators", "rsiOverbought", ["chartIndicators", "rsiOverbought"]],
+  requireAllIntervals: ["indicators", "requireAllIntervals", ["chartIndicators", "requireAllIntervals"]],
+};
+
+const CONFIG_MAP_LOWER = Object.fromEntries(
+  Object.entries(CONFIG_MAP).map(([k, v]) => [k.toLowerCase(), [k, v]])
+);
+
+/**
+ * Apply a set of flat config changes to the live config object and persist
+ * them to user-config.json — the shared mutate+persist+notify pipeline used
+ * by both the update_config tool (LLM/CLI-driven, one call at a time) and
+ * the market-regime auto-switcher (index.js, applies a whole regime profile
+ * at once). Extracted verbatim from the former update_config handler body —
+ * behavior/return shape is unchanged for existing callers.
+ */
+export function applyConfigChanges(changes, { reason = "", lessonTags = ["self_tune", "config_change"] } = {}) {
+  const applied = {};
+  const unknown = [];
+
+  if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
+    return { success: false, error: "changes must be an object", reason };
+  }
+
+  const STRATEGY_BIN_KEYS = new Set(["binsBelow", "minBinsBelow", "maxBinsBelow", "defaultBinsBelow"]);
+  for (const [key, val] of Object.entries(changes)) {
+    const match = CONFIG_MAP[key] ? [key, CONFIG_MAP[key]] : CONFIG_MAP_LOWER[key.toLowerCase()];
+    if (!match) { unknown.push(key); continue; }
+    try {
+      let normalizedVal = val;
+      if (STRATEGY_BIN_KEYS.has(match[0])) {
+        const numericVal = Number(val);
+        if (!Number.isFinite(numericVal)) {
+          throw new Error(`${match[0]} must be a finite number`);
+        }
+        normalizedVal = Math.max(MIN_SAFE_BINS_BELOW, Math.round(numericVal));
+      } else {
+        normalizedVal = normalizeConfigValue(match[0], val);
+      }
+      applied[match[0]] = normalizedVal;
+    } catch (error) {
+      return { success: false, error: error.message, key: match[0], reason };
+    }
+  }
+
+  if (Object.keys(applied).length === 0) {
+    log("config", `update_config failed — unknown keys: ${JSON.stringify(unknown)}, raw changes: ${JSON.stringify(changes)}`);
+    return { success: false, unknown, reason };
+  }
+
+  let userConfig = {};
+  if (fs.existsSync(USER_CONFIG_PATH)) {
+    try {
+      userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+    } catch (error) {
+      return { success: false, error: `Invalid user-config.json: ${error.message}`, reason };
+    }
+  }
+
+  // Auto-scale fee/volume when timeframe changes (unless user set them explicitly in same call).
+  if (applied.timeframe != null && applied.minFeeActiveTvlRatio == null && applied.minVolume == null) {
+    const tf = normalizeTimeframe(applied.timeframe);
+    applied.timeframe = tf;
+    const scaled = scaleScreeningToTimeframe(tf);
+    applied.minFeeActiveTvlRatio = scaled.minFeeActiveTvlRatio;
+    applied.minVolume = scaled.minVolume;
+    applied._timeframeScaled = true;
+    log("config", `timeframe ${tf} → auto-scaled minFeeActiveTvlRatio=${scaled.minFeeActiveTvlRatio}, minVolume=${scaled.minVolume}`);
+  }
+
+  // Apply to live config immediately after the persisted config is known-good.
+  const configChanges = [];
+  for (const [key, val] of Object.entries(applied)) {
+    if (key.startsWith("_")) continue;
+    const [section, field] = CONFIG_MAP[key];
+    const before = config[section][field];
+    config[section][field] = val;
+    log("config", `update_config: config.${section}.${field} ${before} → ${val} (verify: ${config[section][field]})`);
+    if (before !== val) configChanges.push({ key, from: before, to: val });
+  }
+  if (
+    applied.binsBelow != null ||
+    applied.minBinsBelow != null ||
+    applied.maxBinsBelow != null ||
+    applied.defaultBinsBelow != null
+  ) {
+    config.strategy.minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Math.round(Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW)));
+    config.strategy.maxBinsBelow = Math.max(config.strategy.minBinsBelow, Math.round(Number(config.strategy.maxBinsBelow ?? config.strategy.minBinsBelow)));
+    config.strategy.defaultBinsBelow = Math.max(
+      config.strategy.minBinsBelow,
+      Math.min(
+        config.strategy.maxBinsBelow,
+        Math.round(Number(config.strategy.defaultBinsBelow ?? config.strategy.maxBinsBelow)),
+      ),
+    );
+  }
+
+  for (const [key, val] of Object.entries(applied)) {
+    if (key.startsWith("_")) continue;
+    const persistPath = CONFIG_MAP[key]?.[2];
+    if (Array.isArray(persistPath) && persistPath.length > 0) {
+      let target = userConfig;
+      for (const part of persistPath.slice(0, -1)) {
+        if (!target[part] || typeof target[part] !== "object" || Array.isArray(target[part])) {
+          target[part] = {};
+        }
+        target = target[part];
+      }
+      target[persistPath[persistPath.length - 1]] = val;
+    } else {
+      userConfig[key] = val;
+    }
+  }
+  userConfig._lastAgentTune = new Date().toISOString();
+  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+  pushSupabaseConfig().catch(() => {});
+  notifyConfigChange(configChanges, { source: reason || "update_config" }).catch(() => {});
+
+  // Restart cron jobs if intervals changed
+  const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null || applied.pnlPollIntervalSec != null;
+  if (intervalChanged && _cronRestarter) {
+    _cronRestarter();
+    log("config", `Cron restarted — management: ${config.schedule.managementIntervalMin}m, screening: ${config.schedule.screeningIntervalMin}m, pnlPoll: ${config.pnl.pollIntervalSec}s`);
+  }
+
+  // Skip repeated volatility-driven interval changes; they are operational tuning, not reusable lessons.
+  const lessonsKeys = Object.keys(applied).filter(
+    k => !k.startsWith("_") && k !== "managementIntervalMin" && k !== "screeningIntervalMin"
+  );
+  if (lessonsKeys.length > 0) {
+    const summary = lessonsKeys.map(k => `${k}=${applied[k]}`).join(", ");
+    addLesson(`[SELF-TUNED] Changed ${summary} — ${reason}`, lessonTags);
+  }
+
+  log("config", `Agent self-tuned: ${JSON.stringify(applied)} — ${reason}`);
+  return { success: true, applied, unknown, reason };
 }
 
 // Map tool names to implementations
@@ -363,251 +668,7 @@ const toolMap = {
     }
     return { error: "invalid mode" };
   },
-  update_config: ({ changes, reason = "" }) => {
-    // Flat key → config section mapping (covers everything in config.js)
-    const CONFIG_MAP = {
-      // screening
-      minFeeActiveTvlRatio: ["screening", "minFeeActiveTvlRatio"],
-      excludeHighSupplyConcentration: ["screening", "excludeHighSupplyConcentration"],
-      minTvl: ["screening", "minTvl"],
-      maxTvl: ["screening", "maxTvl"],
-      minVolume: ["screening", "minVolume"],
-      minOrganic: ["screening", "minOrganic"],
-      minQuoteOrganic: ["screening", "minQuoteOrganic"],
-      minHolders: ["screening", "minHolders"],
-      minMcap: ["screening", "minMcap"],
-      maxMcap: ["screening", "maxMcap"],
-      minBinStep: ["screening", "minBinStep"],
-      maxBinStep: ["screening", "maxBinStep"],
-      timeframe: ["screening", "timeframe"],
-      category: ["screening", "category"],
-      minTokenFeesSol: ["screening", "minTokenFeesSol"],
-      useDiscordSignals: ["screening", "useDiscordSignals"],
-      discordSignalMode: ["screening", "discordSignalMode"],
-      avoidPvpSymbols: ["screening", "avoidPvpSymbols"],
-      blockPvpSymbols: ["screening", "blockPvpSymbols"],
-      maxBotHoldersPct: ["screening", "maxBotHoldersPct"],
-      maxTop10Pct: ["screening", "maxTop10Pct"],
-      allowedLaunchpads: ["screening", "allowedLaunchpads"],
-      blockedLaunchpads: ["screening", "blockedLaunchpads"],
-      minTokenAgeHours: ["screening", "minTokenAgeHours"],
-      maxTokenAgeHours: ["screening", "maxTokenAgeHours"],
-      minFeePerTvl24h: ["management", "minFeePerTvl24h"],
-      loneCandidateMinDegen: ["screening", "loneCandidateMinDegen"],
-      // management
-      minClaimAmount: ["management", "minClaimAmount"],
-      autoSwapAfterClaim: ["management", "autoSwapAfterClaim"],
-      autoSwapRetryAttempts: ["management", "autoSwapRetryAttempts"],
-      autoSwapRetryDelayMs: ["management", "autoSwapRetryDelayMs"],
-      outOfRangeBinsToClose: ["management", "outOfRangeBinsToClose"],
-      outOfRangeWaitMinutes: ["management", "outOfRangeWaitMinutes"],
-      oorCooldownTriggerCount: ["management", "oorCooldownTriggerCount"],
-      oorCooldownHours: ["management", "oorCooldownHours"],
-      repeatDeployCooldownEnabled: ["management", "repeatDeployCooldownEnabled"],
-      repeatDeployCooldownTriggerCount: ["management", "repeatDeployCooldownTriggerCount"],
-      repeatDeployCooldownHours: ["management", "repeatDeployCooldownHours"],
-      repeatDeployCooldownScope: ["management", "repeatDeployCooldownScope"],
-      repeatDeployCooldownMinFeeEarnedPct: ["management", "repeatDeployCooldownMinFeeEarnedPct"],
-      minVolumeToRebalance: ["management", "minVolumeToRebalance"],
-      stopLossPct: ["management", "stopLossPct"],
-      takeProfitPct: ["management", "takeProfitPct"],
-      takeProfitFeePct: ["management", "takeProfitPct"],
-      trailingTakeProfit: ["management", "trailingTakeProfit"],
-      trailingTriggerPct: ["management", "trailingTriggerPct"],
-      trailingDropPct: ["management", "trailingDropPct"],
-      pnlSanityMaxDiffPct: ["management", "pnlSanityMaxDiffPct"],
-      // pnl poller
-      pnlConfirmTicks: ["pnl", "confirmTicks"],
-      // opportunity poller (interval/enabled changes apply on next restart)
-      opportunityPollEnabled: ["opportunity", "enabled"],
-      opportunityPollIntervalSec: ["opportunity", "pollIntervalSec"],
-      opportunityPollLimit: ["opportunity", "limit"],
-      opportunityMinScore: ["opportunity", "minScore"],
-      opportunitySmartWalletBonus: ["opportunity", "smartWalletScoreBonus"],
-      degenTargetVolRatio: ["opportunity", "targetVolRatio"],
-      degenTargetLpCount: ["opportunity", "targetLpCount"],
-      degenTargetFeeRatio: ["opportunity", "targetFeeRatio"],
-      degenTargetLiquidity: ["opportunity", "targetLiquidity"],
-      solMode: ["management", "solMode"],
-      minSolToOpen: ["management", "minSolToOpen"],
-      deployAmountSol: ["management", "deployAmountSol"],
-      gasReserve: ["management", "gasReserve"],
-      positionSizePct: ["management", "positionSizePct"],
-      minAgeBeforeYieldCheck: ["management", "minAgeBeforeYieldCheck"],
-      // risk
-      maxPositions: ["risk", "maxPositions"],
-      maxDeployAmount: ["risk", "maxDeployAmount"],
-      // schedule
-      managementIntervalMin: ["schedule", "managementIntervalMin"],
-      screeningIntervalMin: ["schedule", "screeningIntervalMin"],
-      healthCheckIntervalMin: ["schedule", "healthCheckIntervalMin"],
-      // models
-      managementModel: ["llm", "managementModel"],
-      screeningModel: ["llm", "screeningModel"],
-      generalModel: ["llm", "generalModel"],
-      temperature: ["llm", "temperature"],
-      maxTokens: ["llm", "maxTokens"],
-      maxSteps: ["llm", "maxSteps"],
-      // strategy
-      strategy: ["strategy", "strategy"],
-      binsBelow: ["strategy", "maxBinsBelow", ["maxBinsBelow"]],
-      minBinsBelow: ["strategy", "minBinsBelow"],
-      maxBinsBelow: ["strategy", "maxBinsBelow"],
-      defaultBinsBelow: ["strategy", "defaultBinsBelow"],
-      // hivemind
-      hiveMindUrl: ["hiveMind", "url"],
-      hiveMindApiKey: ["hiveMind", "apiKey"],
-      agentId: ["hiveMind", "agentId"],
-      hiveMindPullMode: ["hiveMind", "pullMode"],
-      // meridian api / relay
-      publicApiKey: ["api", "publicApiKey"],
-      agentMeridianApiUrl: ["api", "url"],
-      lpAgentRelayEnabled: ["api", "lpAgentRelayEnabled"],
-      // pnl fetcher / poller
-      pnlSource: ["pnl", "source", ["pnlSource"]],
-      pnlRpcUrl: ["pnl", "rpcUrl", ["pnlRpcUrl"]],
-      pnlPollIntervalSec: ["pnl", "pollIntervalSec", ["pnlPollIntervalSec"]],
-      pnlDepositCacheTtlSec: ["pnl", "depositCacheTtlSec", ["pnlDepositCacheTtlSec"]],
-      // gmgn fee source
-      gmgnFeeSource: ["gmgn", "feeSource", ["gmgnFeeSource"]],
-      gmgnApiKey: ["gmgn", "apiKey", ["gmgnApiKey"]],
-      // chart indicators
-      chartIndicatorsEnabled: ["indicators", "enabled", ["chartIndicators", "enabled"]],
-      indicatorEntryPreset: ["indicators", "entryPreset", ["chartIndicators", "entryPreset"]],
-      indicatorExitPreset: ["indicators", "exitPreset", ["chartIndicators", "exitPreset"]],
-      rsiLength: ["indicators", "rsiLength", ["chartIndicators", "rsiLength"]],
-      indicatorIntervals: ["indicators", "intervals", ["chartIndicators", "intervals"]],
-      indicatorCandles: ["indicators", "candles", ["chartIndicators", "candles"]],
-      rsiOversold: ["indicators", "rsiOversold", ["chartIndicators", "rsiOversold"]],
-      rsiOverbought: ["indicators", "rsiOverbought", ["chartIndicators", "rsiOverbought"]],
-      requireAllIntervals: ["indicators", "requireAllIntervals", ["chartIndicators", "requireAllIntervals"]],
-    };
-
-    const applied = {};
-    const unknown = [];
-
-    // Build case-insensitive lookup
-    const CONFIG_MAP_LOWER = Object.fromEntries(
-      Object.entries(CONFIG_MAP).map(([k, v]) => [k.toLowerCase(), [k, v]])
-    );
-
-    if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
-      return { success: false, error: "changes must be an object", reason };
-    }
-
-    const STRATEGY_BIN_KEYS = new Set(["binsBelow", "minBinsBelow", "maxBinsBelow", "defaultBinsBelow"]);
-    for (const [key, val] of Object.entries(changes)) {
-      const match = CONFIG_MAP[key] ? [key, CONFIG_MAP[key]] : CONFIG_MAP_LOWER[key.toLowerCase()];
-      if (!match) { unknown.push(key); continue; }
-      try {
-        let normalizedVal = val;
-        if (STRATEGY_BIN_KEYS.has(match[0])) {
-          const numericVal = Number(val);
-          if (!Number.isFinite(numericVal)) {
-            throw new Error(`${match[0]} must be a finite number`);
-          }
-          normalizedVal = Math.max(MIN_SAFE_BINS_BELOW, Math.round(numericVal));
-        } else {
-          normalizedVal = normalizeConfigValue(match[0], val);
-        }
-        applied[match[0]] = normalizedVal;
-      } catch (error) {
-        return { success: false, error: error.message, key: match[0], reason };
-      }
-    }
-
-    if (Object.keys(applied).length === 0) {
-      log("config", `update_config failed — unknown keys: ${JSON.stringify(unknown)}, raw changes: ${JSON.stringify(changes)}`);
-      return { success: false, unknown, reason };
-    }
-
-    let userConfig = {};
-    if (fs.existsSync(USER_CONFIG_PATH)) {
-      try {
-        userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-      } catch (error) {
-        return { success: false, error: `Invalid user-config.json: ${error.message}`, reason };
-      }
-    }
-
-    // Auto-scale fee/volume when timeframe changes (unless user set them explicitly in same call).
-    if (applied.timeframe != null && applied.minFeeActiveTvlRatio == null && applied.minVolume == null) {
-      const tf = normalizeTimeframe(applied.timeframe);
-      applied.timeframe = tf;
-      const scaled = scaleScreeningToTimeframe(tf);
-      applied.minFeeActiveTvlRatio = scaled.minFeeActiveTvlRatio;
-      applied.minVolume = scaled.minVolume;
-      applied._timeframeScaled = true;
-      log("config", `timeframe ${tf} → auto-scaled minFeeActiveTvlRatio=${scaled.minFeeActiveTvlRatio}, minVolume=${scaled.minVolume}`);
-    }
-
-    // Apply to live config immediately after the persisted config is known-good.
-    const configChanges = [];
-    for (const [key, val] of Object.entries(applied)) {
-      if (key.startsWith("_")) continue;
-      const [section, field] = CONFIG_MAP[key];
-      const before = config[section][field];
-      config[section][field] = val;
-      log("config", `update_config: config.${section}.${field} ${before} → ${val} (verify: ${config[section][field]})`);
-      if (before !== val) configChanges.push({ key, from: before, to: val });
-    }
-    if (
-      applied.binsBelow != null ||
-      applied.minBinsBelow != null ||
-      applied.maxBinsBelow != null ||
-      applied.defaultBinsBelow != null
-    ) {
-      config.strategy.minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Math.round(Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW)));
-      config.strategy.maxBinsBelow = Math.max(config.strategy.minBinsBelow, Math.round(Number(config.strategy.maxBinsBelow ?? config.strategy.minBinsBelow)));
-      config.strategy.defaultBinsBelow = Math.max(
-        config.strategy.minBinsBelow,
-        Math.min(
-          config.strategy.maxBinsBelow,
-          Math.round(Number(config.strategy.defaultBinsBelow ?? config.strategy.maxBinsBelow)),
-        ),
-      );
-    }
-
-    for (const [key, val] of Object.entries(applied)) {
-      if (key.startsWith("_")) continue;
-      const persistPath = CONFIG_MAP[key]?.[2];
-      if (Array.isArray(persistPath) && persistPath.length > 0) {
-        let target = userConfig;
-        for (const part of persistPath.slice(0, -1)) {
-          if (!target[part] || typeof target[part] !== "object" || Array.isArray(target[part])) {
-            target[part] = {};
-          }
-          target = target[part];
-        }
-        target[persistPath[persistPath.length - 1]] = val;
-      } else {
-        userConfig[key] = val;
-      }
-    }
-    userConfig._lastAgentTune = new Date().toISOString();
-    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
-    pushSupabaseConfig().catch(() => {});
-    notifyConfigChange(configChanges, { source: reason || "update_config" }).catch(() => {});
-
-    // Restart cron jobs if intervals changed
-    const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null || applied.pnlPollIntervalSec != null;
-    if (intervalChanged && _cronRestarter) {
-      _cronRestarter();
-      log("config", `Cron restarted — management: ${config.schedule.managementIntervalMin}m, screening: ${config.schedule.screeningIntervalMin}m, pnlPoll: ${config.pnl.pollIntervalSec}s`);
-    }
-
-    // Skip repeated volatility-driven interval changes; they are operational tuning, not reusable lessons.
-    const lessonsKeys = Object.keys(applied).filter(
-      k => !k.startsWith("_") && k !== "managementIntervalMin" && k !== "screeningIntervalMin"
-    );
-    if (lessonsKeys.length > 0) {
-      const summary = lessonsKeys.map(k => `${k}=${applied[k]}`).join(", ");
-      addLesson(`[SELF-TUNED] Changed ${summary} — ${reason}`, ["self_tune", "config_change"]);
-    }
-
-    log("config", `Agent self-tuned: ${JSON.stringify(applied)} — ${reason}`);
-    return { success: true, applied, unknown, reason };
-  },
+  update_config: ({ changes, reason = "" }) => applyConfigChanges(changes, { reason }),
 };
 
 // Tools that modify on-chain state (need extra safety checks)
@@ -932,8 +993,33 @@ async function runSafetyChecks(name, args) {
         }
       }
 
+      // Guard #7: taper size + tighten stop-loss on a 2nd+ deploy into a pool
+      // still inside its early-momentum window — the exact scenario where
+      // guards 1/5/6 can't help yet (no repeat-deploy history, no prior
+      // close, still within the allowed age window).
+      let amountY = deployAmountY;
+      let taperSizeCap = null;
+      if (config.management.repeatDeploySizeTaperEnabled) {
+        const poolAgeHours = numberOrNull(args.pool_age_hours);
+        const earlyWindowHours = numberOrNull(config.screening.tokenEarlyWindowMaxHours) ?? 6;
+        const priorDeploys = getPoolMemory({ pool_address: args.pool_address })?.total_deploys ?? 0;
+        if (priorDeploys >= 1 && poolAgeHours != null && poolAgeHours <= earlyWindowHours) {
+          const taperPct = config.management.repeatDeploySizeTaperPct ?? [0.6, 0.4];
+          const taperIndex = Math.min(priorDeploys - 1, taperPct.length - 1);
+          const taperMultiplier = Number(taperPct[taperIndex] ?? taperPct[taperPct.length - 1]);
+          taperSizeCap = Math.max(0.1, config.management.deployAmountSol * taperMultiplier);
+          if (amountY > taperSizeCap) {
+            log("screening", `Guard #7: repeat deploy #${priorDeploys + 1} into ${args.pool_address.slice(0, 8)} (pool age ${poolAgeHours.toFixed(1)}h) — tapering size from ${amountY} to ${taperSizeCap} SOL`);
+            amountY = taperSizeCap;
+            args.amount_y = taperSizeCap;
+          }
+          const tightenedStopLoss = config.management.stopLossPct * (config.management.repeatDeployStopLossFraction ?? 0.5);
+          args.stop_loss_pct_override = tightenedStopLoss;
+          log("screening", `Guard #7: repeat deploy #${priorDeploys + 1} into ${args.pool_address.slice(0, 8)} — tightened stop-loss to ${tightenedStopLoss.toFixed(2)}%`);
+        }
+      }
+
       // Check amount limits
-      const amountY = deployAmountY;
       if (!Number.isFinite(amountY) || amountY <= 0) {
         return {
           pass: false,
@@ -941,7 +1027,9 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      const minDeploy = Math.max(0.1, config.management.deployAmountSol);
+      // A guard #7 taper intentionally goes below the normal floor — use its
+      // own (still >= 0.1 SOL) cap as the floor instead of the standard one.
+      const minDeploy = taperSizeCap != null ? taperSizeCap : Math.max(0.1, config.management.deployAmountSol);
       if (amountY < minDeploy) {
         return {
           pass: false,

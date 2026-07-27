@@ -10,7 +10,7 @@ import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates, degenScore } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
-import { executeTool, registerCronRestarter } from "./tools/executor.js";
+import { executeTool, registerCronRestarter, applyConfigChanges } from "./tools/executor.js";
 import {
   startPolling,
   stopPolling,
@@ -27,7 +27,9 @@ import {
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
-import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
+import { getActiveRegime, setActiveRegime, getRegimeProfile } from "./market-regime-library.js";
+import { classifyRegime } from "./market-regime.js";
+import { recordPositionSnapshot, recallForPool, addPoolNote, recordRejection, getRecentRejectionCount } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { stageSignals } from "./signal-tracker.js";
@@ -414,19 +416,48 @@ export async function runScreeningCycle({ silent = false } = {}) {
   try {
     // Reuse pre-fetched balance — no extra RPC call needed
     const currentBalance = preBalance;
-    const deployAmount = computeDeployAmount(currentBalance.sol);
-    log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
-
-    // Load active strategy
-    const activeStrategy = getActiveStrategy();
-    const deployStrategy = config.strategy.strategy;
-    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (FIXED — never change) | deposit: SOL only (amount_y, amount_x=0)`
-      + (activeStrategy ? `\nSTRATEGY CONTEXT: ${activeStrategy.name} — entry: ${activeStrategy.entry?.condition || "n/a"} | exit: ${activeStrategy.exit?.notes || "n/a"} | best for: ${activeStrategy.best_for}` : "");
 
     // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
     const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
     const candidates = (topCandidates?.candidates || topCandidates?.pools || []).slice(0, 10);
     const earlyFilteredExamples = topCandidates?.filtered_examples || [];
+
+    // Market regime detection — classify Slow/Normal/Hot from this cycle's
+    // candidate set and auto-apply the matching config profile (strategy,
+    // screening thresholds, exit rules, sizing) before deployAmount/strategy
+    // are computed below, so a same-cycle regime switch actually takes effect.
+    if (config.regime.enabled) {
+      const { regime, aggregateScore, sampleSize } = classifyRegime(candidates, {
+        targets: config.opportunity,
+        cutoffs: { slowCutoff: config.regime.slowCutoff, hotCutoff: config.regime.hotCutoff },
+      });
+      const prevRegime = getActiveRegime()?.active ?? "normal";
+      if (regime && regime !== prevRegime) {
+        const profile = getRegimeProfile({ id: regime });
+        applyConfigChanges(profile.changes, {
+          reason: `regime_change ${prevRegime}→${regime} (median degenScore ${aggregateScore.toFixed(1)}, n=${sampleSize})`,
+          lessonTags: ["regime_change", "config_change"],
+        });
+        setActiveRegime({ id: regime });
+        appendDecision({
+          type: "regime_change",
+          actor: "SCREENER",
+          summary: `Regime switched ${prevRegime} → ${regime}`,
+          reason: `median degenScore=${aggregateScore.toFixed(1)} (slowCutoff=${config.regime.slowCutoff}, hotCutoff=${config.regime.hotCutoff})`,
+        });
+        log("cron", `Market regime switched ${prevRegime} → ${regime} (median degenScore ${aggregateScore.toFixed(1)}, n=${sampleSize})`);
+      }
+    }
+
+    // deployAmount/strategy computed AFTER the regime hook so a same-cycle
+    // switch is reflected in this cycle's deploy sizing and LLM strategy prompt
+    const deployAmount = computeDeployAmount(currentBalance.sol);
+    log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
+
+    const activeStrategy = getActiveStrategy();
+    const deployStrategy = config.strategy.strategy;
+    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (FIXED — never change) | deposit: SOL only (amount_y, amount_x=0)`
+      + (activeStrategy ? `\nSTRATEGY CONTEXT: ${activeStrategy.name} — entry: ${activeStrategy.entry?.condition || "n/a"} | exit: ${activeStrategy.exit?.notes || "n/a"} | best for: ${activeStrategy.best_for}` : "");
 
     const allCandidates = [];
     for (const pool of candidates) {
@@ -461,11 +492,36 @@ export async function runScreeningCycle({ silent = false } = {}) {
         return false;
       }
       const botPct = ti?.audit?.bot_holders_pct;
+      const top10Pct = ti?.audit?.top_holders_pct;
       const maxBotHoldersPct = config.screening.maxBotHoldersPct;
-      if (botPct != null && maxBotHoldersPct != null && botPct > maxBotHoldersPct) {
-        log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${maxBotHoldersPct}%`);
-        filteredOut.push({ name: pool.name, reason: `bot holders ${botPct}% > ${maxBotHoldersPct}%` });
-        return false;
+      const maxTop10Pct = config.screening.maxTop10Pct;
+      const hysteresisCount = config.screening.hysteresisRejectionCount ?? 2;
+      const hysteresisWindow = config.screening.hysteresisWindowHours ?? 24;
+      const hysteresisMargin = config.screening.hysteresisMarginPct ?? 5;
+
+      if (botPct != null && maxBotHoldersPct != null) {
+        // Guard #2: a pool rejected repeatedly on bot-holders shouldn't slip
+        // through the instant it dips just under the raw cutoff.
+        const priorRejections = getRecentRejectionCount(pool.pool, "bot_holders_pct", hysteresisWindow);
+        const effectiveCap = priorRejections >= hysteresisCount ? maxBotHoldersPct - hysteresisMargin : maxBotHoldersPct;
+        if (botPct > effectiveCap) {
+          const marginNote = priorRejections >= hysteresisCount ? ` (hysteresis: ${priorRejections} recent rejections, cap tightened by ${hysteresisMargin}%)` : "";
+          log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${effectiveCap}%${marginNote}`);
+          filteredOut.push({ name: pool.name, reason: `bot holders ${botPct}% > ${effectiveCap}%${marginNote}` });
+          recordRejection(pool.pool, "bot_holders_pct", botPct);
+          return false;
+        }
+      }
+      if (top10Pct != null && maxTop10Pct != null) {
+        const priorRejections = getRecentRejectionCount(pool.pool, "top10pct", hysteresisWindow);
+        const effectiveCap = priorRejections >= hysteresisCount ? maxTop10Pct - hysteresisMargin : maxTop10Pct;
+        if (top10Pct > effectiveCap) {
+          const marginNote = priorRejections >= hysteresisCount ? ` (hysteresis: ${priorRejections} recent rejections, cap tightened by ${hysteresisMargin}%)` : "";
+          log("screening", `Top10 filter: dropped ${pool.name} — top10 ${top10Pct}% > ${effectiveCap}%${marginNote}`);
+          filteredOut.push({ name: pool.name, reason: `top10 concentration ${top10Pct}% > ${effectiveCap}%${marginNote}` });
+          recordRejection(pool.pool, "top10pct", top10Pct);
+          return false;
+        }
       }
       return true;
     });
@@ -914,7 +970,11 @@ function getDeterministicCloseRule(position, managementConfig) {
     return false;
   })();
 
-  if (!pnlSuspect && position.pnl_pct != null && position.pnl_pct <= managementConfig.stopLossPct) {
+  // Guard #7: a repeat deploy tapered at entry gets a tighter, position-specific
+  // stop-loss (set on the position at deploy time) instead of the global default.
+  const effectiveStopLossPct = position.stop_loss_pct_override ?? managementConfig.stopLossPct;
+
+  if (!pnlSuspect && position.pnl_pct != null && position.pnl_pct <= effectiveStopLossPct) {
     return { action: "CLOSE", rule: 1, reason: "stop loss" };
   }
   if (!pnlSuspect && position.pnl_pct != null && position.pnl_pct >= managementConfig.takeProfitPct) {
@@ -926,6 +986,19 @@ function getDeterministicCloseRule(position, managementConfig) {
     position.active_bin > position.upper_bin + managementConfig.outOfRangeBinsToClose
   ) {
     return { action: "CLOSE", rule: 3, reason: "pumped far above range" };
+  }
+  // Guard #4: don't wait out the full OOR timer if the position is already
+  // bleeding meaningfully — SalaryCat-SOL went OOR at 20:09 and didn't close
+  // until 20:19 at -35.96% because the full stop-loss/OOR-wait rules are
+  // independent lagging brakes. Close immediately once both conditions hold.
+  if (
+    managementConfig.fastExitOnOorEnabled &&
+    !pnlSuspect &&
+    position.pnl_pct != null &&
+    position.in_range === false &&
+    position.pnl_pct <= effectiveStopLossPct * (managementConfig.fastExitStopLossFraction ?? 0.5)
+  ) {
+    return { action: "CLOSE", rule: 6, reason: `Fast exit: OOR + PnL ${position.pnl_pct}% past ${managementConfig.fastExitStopLossFraction ?? 0.5} of stop-loss` };
   }
   if (
     position.active_bin != null &&

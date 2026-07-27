@@ -182,6 +182,41 @@ export async function recordPerformance(perf) {
       exit_tvl: perf.exit_tvl,
       exit_volume: perf.exit_volume,
     });
+
+    // Guard #5: pin an AVOID lesson for pools with a proven bad track
+    // record so they outrank the normal recency cap in future SCREENER
+    // prompts instead of aging out like any other lesson.
+    const { getPoolMemory } = await import("./pool-memory.js");
+    const { config: liveConfig } = await import("./config.js");
+    const memory = getPoolMemory({ pool_address: perf.pool });
+    const avoidThreshold = liveConfig.management.avoidPinThresholdPct ?? -10;
+    const minDeploys = liveConfig.management.avoidPinMinDeploys ?? 2;
+    if (memory?.known && memory.total_deploys >= minDeploys && memory.avg_pnl_pct <= avoidThreshold) {
+      const avoidTag = `avoid_pool:${perf.pool}`;
+      const avoidRule = `AVOID: ${perf.pool_name || perf.pool} — ${memory.total_deploys} deploys, avg PnL ${memory.avg_pnl_pct}%, win rate ${memory.win_rate}%. Proven underperformer, do not redeploy.`;
+      const dataAfterMemory = load();
+      const existingAvoid = dataAfterMemory.lessons.find((l) => l.tags?.includes(avoidTag));
+      if (existingAvoid) {
+        existingAvoid.rule = avoidRule;
+        existingAvoid.pinned = true;
+        existingAvoid.created_at = new Date().toISOString();
+      } else {
+        dataAfterMemory.lessons.push({
+          id: Date.now(),
+          rule: avoidRule,
+          tags: ["avoid", avoidTag, "screening"],
+          outcome: "bad",
+          sourceType: "performance",
+          confidence: 0.85,
+          pinned: true,
+          role: null,
+          pool: perf.pool,
+          created_at: new Date().toISOString(),
+        });
+      }
+      save(dataAfterMemory);
+      log("lessons", `AVOID lesson pinned for ${perf.pool_name || perf.pool}: avg PnL ${memory.avg_pnl_pct}%, ${memory.total_deploys} deploys`);
+    }
   }
 
   // Evolve thresholds every 5 closed positions

@@ -8,6 +8,39 @@ Meridian runs continuous screening and management cycles, deploying capital into
 
 ---
 
+## Changelog
+
+### 2026-07-27 — Risk guard hardening (SalaryCat-SOL loss post-mortem)
+
+Root-caused a real trading loss (SalaryCat-SOL, three same-day deploys, third one
+lost -35.96% / -$16.23) and added seven config-driven safety guards, each verified
+against the real historical data for this and two other past ≥20% losses
+(WORM-SOL, Agamemnon-SOL):
+
+- **Repeat-deploy cooldown tightened** — `repeatDeployCooldownTriggerCount` 3 → 2, blocks a 3rd same-day deploy into one pool before it can lose money.
+- **Rejection hysteresis** — a pool rejected ≥2 times for bot-holders%/top10% concentration gets a tightened cap so it can't slip through the instant a metric dips just under the raw cutoff.
+- **Pre-deploy TVL/mcap decline check** — rejects a deploy if the pool's TVL has dropped >20% since the last observed screening pass, even if it still clears the static minimum.
+- **Token-age deploy window** — allows deploys in a pool's first 6h (early momentum), blocks hours 6–30 (highest-risk dump window), reopens after — using the DLMM pool's own creation time, not the token's original mint date.
+- **Repeat-deploy size taper + tighter stop-loss** — a 2nd+ deploy into a pool still within its early window gets a smaller position size (60%/40% tiers) and a tightened, position-specific stop-loss, since this is the one scenario none of the other guards can catch in time.
+- **Fast OOR + negative-PnL exit** — closes a position immediately once it's out-of-range (either direction) and already past half its effective stop-loss, instead of waiting the full OOR timer or full stop-loss threshold.
+- **AVOID-tagged pinned lessons** — a pool with a proven bad track record (≥2 deploys, avg PnL ≤ -10%) gets a pinned lesson that bypasses the normal recency cap in future SCREENER prompts.
+
+All 15 new config keys are settable via `update_config`/Telegram, default on, and
+backtested to have prevented all three known historical ≥20% losses.
+
+### 2026-07-14 → 2026-07-27 — Telegram group-topic messaging + Supabase integration
+
+- Telegram messages now route correctly into group topics/threads, with improved
+  message handling for group chats and fuller error logging on unclassified LLM
+  provider errors.
+- Added Supabase as an optional remote store: `supabase-config.js` syncs
+  `user-config.json` to/from a Supabase key-value table (push on `update_config`,
+  pull on startup + every 15 min), and `position-log.js` mirrors every
+  deploy/close into `deploy_position`/`closed_position` tables for external
+  reporting.
+
+---
+
 ## What it does
 
 - **Screens pools** — scans Meteora DLMM pools against configurable thresholds (fee/TVL ratio, organic score, holder count, mcap, bin step) and surfaces high-quality opportunities
@@ -625,6 +658,54 @@ Any OpenAI-compatible endpoint works.
 ---
 
 ## Architecture
+
+### Process flow
+
+```mermaid
+flowchart TD
+    CRON_S["Cron: Screening<br/>every 30 min"]
+    CRON_OPP["Opportunity poller<br/>every 45s"]
+    CRON_M["Cron: Management<br/>every 10 min"]
+    TG["Telegram / REPL / CLI<br/>ad-hoc chat"]
+
+    CRON_S --> S1
+    CRON_OPP -->|"degenScore ≥ minScore"| S1
+    CRON_M --> M1
+    TG --> G1
+
+    subgraph SCREEN["Screening Cycle — SCREENER role"]
+        direction TB
+        S1["getTopCandidates()"] --> S2{"classifyRegime()<br/>market decision tree"}
+        S2 -->|"regime changed"| S3["applyConfigChanges()<br/>strategy · thresholds · exits · sizing"]
+        S2 -->|"unchanged"| S4
+        S3 --> S4["Hard filters:<br/>hysteresis · TVL decline ·<br/>token-age window · cooldowns"]
+        S4 --> S5["Per-candidate recon:<br/>smart wallets · narrative · token info"]
+        S5 --> S6["agentLoop() — LLM reasons,<br/>picks a candidate, calls deploy_position"]
+    end
+
+    subgraph MANAGE["Management Cycle — MANAGER role"]
+        direction TB
+        M1["getMyPositions()"] --> M2["Deterministic rules:<br/>stop-loss · take-profit · OOR ·<br/>fast-exit · low-yield"]
+        M2 -->|"action needed"| M3["agentLoop() — LLM executes<br/>the pre-assigned action"]
+        M2 -->|"all STAY"| M4["No LLM call"]
+    end
+
+    subgraph GENERAL["Ad-hoc chat — GENERAL role"]
+        direction TB
+        G1["Intent-matched tool subset"] --> G2["agentLoop()"]
+    end
+
+    S6 --> SAFETY[["runSafetyChecks()<br/>PROTECTED_TOOLS"]]
+    M3 --> SAFETY
+    G2 --> SAFETY
+    SAFETY --> ONCHAIN[("Meteora DLMM<br/>on-chain")]
+
+    ONCHAIN --> STATE[("state.json · pool-memory.json ·<br/>lessons.json · decision-log.json")]
+    STATE -.->|"feeds next cycle"| S1
+    STATE -.->|"feeds next cycle"| M1
+```
+
+### File map
 
 ```
 index.js            Main entry: REPL + cron orchestration + Telegram bot polling

@@ -223,6 +223,115 @@ export function recordPoolDeploy(poolAddress, deployData) {
   log("pool-memory", `Recorded deploy for ${entry.name} (${poolAddress.slice(0, 8)}): PnL ${deploy.pnl_pct}%`);
 }
 
+// ─── Rejection hysteresis (guard #2) ────────────────────────────
+// A pool rejected on the same borderline reason repeatedly shouldn't
+// slip through the instant the metric dips just under the raw cutoff —
+// record each rejection so a hysteresis margin can be applied.
+
+const HYSTERESIS_REASON_KEYS = ["bot_holders_pct", "top10pct"];
+const MAX_REJECTIONS_STORED = 20;
+
+/**
+ * Record a hard-filter rejection for a pool on a borderline reason
+ * (bot_holders_pct / top10pct). Called from the screening hard-filter pass.
+ */
+export function recordRejection(poolAddress, reasonKey, value) {
+  if (!poolAddress || !HYSTERESIS_REASON_KEYS.includes(reasonKey)) return;
+  const db = load();
+
+  if (!db[poolAddress]) {
+    db[poolAddress] = {
+      name: poolAddress.slice(0, 8),
+      base_mint: null,
+      deploys: [],
+      total_deploys: 0,
+      avg_pnl_pct: 0,
+      win_rate: 0,
+      last_deployed_at: null,
+      last_outcome: null,
+      notes: [],
+    };
+  }
+
+  const entry = db[poolAddress];
+  if (!Array.isArray(entry.rejections)) entry.rejections = [];
+  entry.rejections.push({ reason: reasonKey, value: Number(value), ts: new Date().toISOString() });
+  if (entry.rejections.length > MAX_REJECTIONS_STORED) {
+    entry.rejections = entry.rejections.slice(-MAX_REJECTIONS_STORED);
+  }
+
+  save(db);
+}
+
+/**
+ * Count recent same-reason rejections for a pool within a rolling window.
+ * Used to require an extra safety margin before letting a borderline pool
+ * through after it flip-flops across the raw cutoff.
+ */
+export function getRecentRejectionCount(poolAddress, reasonKey, windowHours) {
+  if (!poolAddress) return 0;
+  const db = load();
+  const entry = db[poolAddress];
+  if (!entry?.rejections?.length) return 0;
+  const cutoff = Date.now() - windowHours * 60 * 60 * 1000;
+  return entry.rejections.filter((r) => r.reason === reasonKey && new Date(r.ts).getTime() >= cutoff).length;
+}
+
+// ─── TVL/mcap decline tracking (guard #3) ───────────────────────
+// Screening recon observes a pool's TVL well before a deploy decision is
+// made. Recording those observations lets a pre-deploy check catch a pool
+// whose liquidity is actively collapsing between recon and the deploy call.
+
+const MAX_TVL_OBSERVATIONS = 12;
+
+/**
+ * Record a TVL observation for a pool, seen during screening recon or a
+ * deploy pre-flight check.
+ */
+export function recordTvlObservation(poolAddress, tvl) {
+  if (!poolAddress || !Number.isFinite(Number(tvl))) return;
+  const db = load();
+
+  if (!db[poolAddress]) {
+    db[poolAddress] = {
+      name: poolAddress.slice(0, 8),
+      base_mint: null,
+      deploys: [],
+      total_deploys: 0,
+      avg_pnl_pct: 0,
+      win_rate: 0,
+      last_deployed_at: null,
+      last_outcome: null,
+      notes: [],
+    };
+  }
+
+  const entry = db[poolAddress];
+  if (!Array.isArray(entry.tvl_observations)) entry.tvl_observations = [];
+  entry.tvl_observations.push({ tvl: Number(tvl), ts: new Date().toISOString() });
+  if (entry.tvl_observations.length > MAX_TVL_OBSERVATIONS) {
+    entry.tvl_observations = entry.tvl_observations.slice(-MAX_TVL_OBSERVATIONS);
+  }
+
+  save(db);
+}
+
+/**
+ * Return the earliest TVL observation still within `maxAgeHours` — the
+ * reference point a pre-deploy decline check compares the current TVL
+ * against. Returns null if no observation exists in that window (fails
+ * open — no history, no block).
+ */
+export function getPriorTvlObservation(poolAddress, maxAgeHours) {
+  if (!poolAddress) return null;
+  const db = load();
+  const entry = db[poolAddress];
+  if (!entry?.tvl_observations?.length) return null;
+  const cutoff = Date.now() - maxAgeHours * 60 * 60 * 1000;
+  const inWindow = entry.tvl_observations.filter((o) => new Date(o.ts).getTime() >= cutoff);
+  return inWindow.length > 0 ? inWindow[0] : null;
+}
+
 export function isPoolOnCooldown(poolAddress) {
   if (!poolAddress) return false;
   const db = load();

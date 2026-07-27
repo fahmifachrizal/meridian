@@ -472,6 +472,7 @@ export async function deployPosition({
   entry_tvl,
   entry_volume,
   entry_holders,
+  stop_loss_pct_override,
 }) {
   pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
@@ -712,6 +713,7 @@ export async function deployPosition({
           entry_tvl,
           entry_volume,
           entry_holders,
+          stop_loss_pct_override,
         });
       }
 
@@ -854,6 +856,7 @@ export async function deployPosition({
       entry_tvl,
       entry_volume,
       entry_holders,
+      stop_loss_pct_override,
     });
 
     appendDecision({
@@ -1327,6 +1330,7 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
           age_minutes:        binData?.createdAt ? Math.floor((Date.now() - binData.createdAt * 1000) / 60000) : ageFromState,
           minutes_out_of_range: minutesOutOfRange(positionAddress),
           instruction:        tracked?.instruction ?? null,
+          stop_loss_pct_override: tracked?.stop_loss_pct_override ?? null,
         });
       }
     }
