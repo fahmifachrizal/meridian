@@ -166,9 +166,17 @@ async function postTelegramRaw(method, body) {
   }
 }
 
-export async function sendMessage(text) {
+export async function sendMessage(text, { parseMode } = {}) {
   if (!TOKEN || !chatId) return;
-  return postTelegram("sendMessage", { text: String(text).slice(0, 4096) });
+  return postTelegram("sendMessage", {
+    text: String(text).slice(0, 4096),
+    ...(parseMode ? { parse_mode: parseMode } : {}),
+  });
+}
+
+/** Escape text for safe embedding in an HTML-parse-mode Telegram message. */
+export function escapeHtml(text) {
+  return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 export async function sendMessageWithButtons(text, inlineKeyboard) {
@@ -184,11 +192,12 @@ export async function sendHTML(html) {
   return postTelegram("sendMessage", { text: html.slice(0, 4096), parse_mode: "HTML" });
 }
 
-export async function editMessage(text, messageId) {
+export async function editMessage(text, messageId, { parseMode } = {}) {
   if (!TOKEN || !chatId || !messageId) return null;
   return postTelegram("editMessageText", {
     message_id: messageId,
     text: String(text).slice(0, 4096),
+    ...(parseMode ? { parse_mode: parseMode } : {}),
   });
 }
 
@@ -291,7 +300,7 @@ function summarizeToolResult(name, result) {
   }
 }
 
-export async function createLiveMessage(title, intro = "Starting...") {
+export async function createLiveMessage(title, intro = "Starting...", { parseMode } = {}) {
   if (!TOKEN || !chatId) return null;
   const typing = createTypingIndicator();
 
@@ -304,6 +313,7 @@ export async function createLiveMessage(title, intro = "Starting...") {
     flushTimer: null,
     flushPromise: null,
     flushRequested: false,
+    parseMode: parseMode || null,
   };
 
   function render() {
@@ -319,11 +329,11 @@ export async function createLiveMessage(title, intro = "Starting...") {
     state.flushRequested = false;
     const text = render();
     if (!state.messageId) {
-      const sent = await sendMessage(text);
+      const sent = await sendMessage(text, { parseMode: state.parseMode });
       state.messageId = sent?.result?.message_id ?? null;
       return;
     }
-    await editMessage(text, state.messageId);
+    await editMessage(text, state.messageId, { parseMode: state.parseMode });
   }
 
   function scheduleFlush(delay = 300) {
@@ -337,8 +347,12 @@ export async function createLiveMessage(title, intro = "Starting...") {
   }
 
   async function upsertToolLine(name, icon, suffix = "") {
-    const label = toolLabel(name);
-    const line = `${icon} ${label}${suffix ? ` ${suffix}` : ""}`;
+    // Tool names are fixed/known-safe; suffix carries dynamic tool-result
+    // text (error messages, reasons) that must be escaped whenever this
+    // message is in HTML mode, or one stray `<`/`&` breaks the whole render.
+    const label = state.parseMode === "HTML" ? escapeHtml(toolLabel(name)) : toolLabel(name);
+    const safeSuffix = suffix && state.parseMode === "HTML" ? escapeHtml(suffix) : suffix;
+    const line = `${icon} ${label}${safeSuffix ? ` ${safeSuffix}` : ""}`;
     const idx = state.toolLines.findIndex((entry) => entry.includes(` ${label}`));
     if (idx >= 0) state.toolLines[idx] = line;
     else state.toolLines.push(line);

@@ -396,6 +396,107 @@ Standalone process — `cd discord-listener && npm install && npm start`. Shares
 
 ---
 
+## Testing / QA protocol
+
+`npm test` is the gate — it must stay green through any change to `config.js`,
+`tools/executor.js`'s `CONFIG_MAP`, `getDeterministicCloseRule` (index.js),
+or any of the 7 post-mortem guards. It runs, in order: `test:syntax` (every
+`.js` file, `node --check`), `test:guards`, `test:invariants`,
+`test:benchmark`, `test:benchmark-eval` — all offline, no network, no
+wallet, no live agent. (`test:regime` — `classifyRegime()`'s decision tree
+and `market-regime-library.js`'s profile store — lives on
+`feat/add-regime-check`; both branches' suites merge into one `npm test`
+gate once combined.)
+
+| Script | Covers |
+|---|---|
+| `test:syntax` | Every file in the repo parses. |
+| `test:guards` | The 7 SalaryCat-SOL post-mortem guards (token-age window, rejection hysteresis, TVL decline check). |
+| `test:invariants` | **"Absolute state" contract tests** — see below. This is the one future changes are most likely to break, and the one that matters most. |
+
+`test/test-invariants.js` is the executable version of README.md's
+"Position lifecycle" and "Market regime state machine" diagrams. It locks in:
+- Config sign/bound invariants (`stopLossPct < 0`, `takeProfitPct > 0`,
+  `minBinsBelow >= MIN_SAFE_BINS_BELOW`, `regime.slowCutoff < regime.hotCutoff`, …).
+- **`CONFIG_MAP` <-> `config.js` bidirectional consistency** — every
+  `CONFIG_MAP` entry must resolve to a real `config[section][field]` path.
+  A typo'd or renamed config field fails this immediately instead of silently
+  no-op'ing the next time an agent calls `update_config`.
+- Market-regime profile completeness — all 3 regimes define the exact same
+  key set, every key exists in `CONFIG_MAP`, `curve` is never used, and
+  slow/normal/hot are ordered sensibly (stopLoss/takeProfit/size all monotonic).
+- `degenScore()`/`classifyRegime()` bounds — fuzzed edge-case pools always
+  score a finite `[0,100]`; `classifyRegime()` always returns one of
+  `null`/`"slow"`/`"normal"`/`"hot"`.
+- **`getDeterministicCloseRule()` rule precedence** — one isolated test per
+  close reason (stop loss, take profit, pumped-above-range, fast-exit,
+  OOR-wait, low-yield), plus a precedence test that locks in which rule wins
+  when a fabricated position matches more than one condition at once. If you
+  reorder the rules in `index.js`, this test tells you immediately whether
+  the new order is intentional or a regression.
+
+**Conventions for new tests** (see `test/lib/test-kit.js`):
+- `createSuite(title)` → `{ section, check, finish }`. Call `finish()` last
+  and `process.exit()` its return value.
+- Anything that touches a real `*.json` store (`pool-memory.json`,
+  `market-regime-profiles.json`, `user-config.json`, `state.json`, …) MUST
+  wrap the touching code in `withRestoredFile(path, fn)` — snapshots the
+  file, runs `fn`, restores exact pre-test content even if `fn` throws. Use
+  fake IDs prefixed `TEST_..._DO_NOT_USE` so a forgotten restore is obvious
+  and grep-able, never real pool/position addresses.
+- `getDeterministicCloseRule` and `CONFIG_MAP` are exported from
+  `index.js`/`tools/executor.js` specifically so they're directly
+  unit-testable — importing `index.js` for tests is safe because every
+  side effect (cron, Telegram polling, HiveMind/Supabase bootstrap) is
+  gated behind the `isMain` check, which is false when the module isn't
+  run as the actual entrypoint.
+
+**When adding a new config key or guard**: add it to `test:invariants` — at
+minimum a sign/bound check if it's a threshold, and if it's part of a
+regime profile, the completeness test already checks it automatically as
+long as all 3 profiles define it.
+
+**`test/fixtures/benchmark-positions.json`** — 8 real historical closed
+positions (3 known big losses + 5 diverse wins/small-losses), each with
+entry/exit market metrics, a real minute-level `price_ohlcv_1m` price/volume
+series spanning the exact deploy-to-close window (sourced from
+GeckoTerminal's public API — Meteora's own pool OHLCV endpoint only serves
+the current ~10 recent candles and can't reconstruct history), and the
+actual per-tick `pnl_pct`/`in_range` `timeline` this repo recorded live.
+Regenerate with `node scripts/build-benchmark-dataset.js` then
+`node scripts/fetch-benchmark-ohlcv.js` and
+`node scripts/fetch-benchmark-pool-metadata.js` (the last adds
+`pool_created_at`/`pool_age_hours_at_deploy`/`deploy_sequence`, needed by
+guards #1 and #6's replay). See `test/fixtures/README.md` for full details.
+
+**`test/test-benchmark.js`** (part of `npm test`) replays all 8 positions
+against the *current* guards and `getDeterministicCloseRule` — offline,
+reads only the static fixture. Asserts every `big_loss` position is caught
+or mitigated by at least one of {guard #1, guard #6, a rule-1/2/6 replay of
+its recorded `timeline`}, and that guards #1/#6 only ever block the two
+already-known, accepted false positives in this sample (Waddles-SOL for
+guard #1, brain-SOL for guard #6 — both real wins that a repeat-deploy/
+token-age guard would still have flagged; a NEW unseen false positive still
+fails the gate). This is how a future guard/threshold change gets checked
+against real outcomes instead of just synthetic fixtures.
+
+**`test/lib/benchmark-eval.js`** (built TDD — spec in
+`test/test-benchmark-eval.js` was written first with hand-computed expected
+numbers, confirmed to fail before the module existed) is a config
+backtester: `evaluateConfig(cfg, positions, poolMemory)` replays guards
+#1/#6/#7 for the deploy gate and rules 1/2/6 for the exit, then converts the
+result into `pnl_sol`/`pnl_usd` per position and in aggregate, compared
+against what actually happened historically. Run
+`npm run evaluate-config` (live config) or
+`node scripts/evaluate-config.js path/to/candidate.json` (a
+`{screening:{...}, management:{...}}` partial override merged onto the live
+config) for a report. Same scope ceiling as `test-benchmark.js` — guards
+#2/#3/#5 aren't replayed, rules 3/4/5 aren't replayable from `timeline`, and
+a candidate config change is scored only against the same 8 fixture
+positions, not live re-screening.
+
+---
+
 ## Known issues / tech debt (verified by reading the code)
 
 - **`lessons.js evolveThresholds()`** evolves `minOrganic` and `minFeeActiveTvlRatio` only.

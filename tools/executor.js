@@ -295,7 +295,7 @@ function normalizeConfigValue(key, value) {
 // Shared by update_config (LLM/CLI-driven) and applyConfigChanges' other
 // internal callers (e.g. market-regime auto-switching) — hoisted to module
 // level so it's built once, not per call.
-const CONFIG_MAP = {
+export const CONFIG_MAP = {
   // screening
   minFeeActiveTvlRatio: ["screening", "minFeeActiveTvlRatio"],
   excludeHighSupplyConcentration: ["screening", "excludeHighSupplyConcentration"],
