@@ -22,7 +22,6 @@ import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsO
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../config.js";
 import { getRecentDecisions } from "../decision-log.js";
-import { pushSupabaseConfig } from "../supabase-config.js";
 import { recordDeploy, recordClose } from "../position-log.js";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
@@ -371,6 +370,8 @@ export const CONFIG_MAP = {
   regimeDetectionEnabled: ["regime", "enabled"],
   regimeSlowCutoff: ["regime", "slowCutoff"],
   regimeHotCutoff: ["regime", "hotCutoff"],
+  regimeRelaxAfterFails: ["regime", "relaxAfterFails"],
+  regimeSuppressMinutes: ["regime", "suppressMinutes"],
   // pnl poller
   pnlConfirmTicks: ["pnl", "confirmTicks"],
   // opportunity poller (interval/enabled changes apply on next restart)
@@ -549,7 +550,10 @@ export function applyConfigChanges(changes, { reason = "", lessonTags = ["self_t
   }
   userConfig._lastAgentTune = new Date().toISOString();
   fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
-  pushSupabaseConfig().catch(() => {});
+  // NOTE: deliberately does NOT push to Supabase. Supabase is the operator's
+  // source of truth and is PULL-ONLY for the agent — nothing the agent decides
+  // may propagate upstream and overwrite the operator's baseline. Pushing is an
+  // explicit operator action (scripts/push-config.js / `node cli.js config push`).
   notifyConfigChange(configChanges, { source: reason || "update_config" }).catch(() => {});
 
   // Restart cron jobs if intervals changed

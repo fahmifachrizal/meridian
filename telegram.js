@@ -497,64 +497,102 @@ export function stopPolling() {
 }
 
 // ─── Notification helpers ────────────────────────────────────────
+/**
+ * Render a label/value table inside a <pre> block — the house style for every
+ * structured notification. Keeps columns aligned in Telegram's monospace font
+ * and escapes both sides, so dynamic values can never break the HTML parse.
+ */
+export function htmlTable(rows, { labelWidth = 11 } = {}) {
+  const body = rows
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([label, value]) => `${escapeHtml(String(label)).padEnd(labelWidth)}${escapeHtml(String(value))}`)
+    .join("\n");
+  return body ? `<pre>${body}</pre>` : "";
+}
+
+function fmtPrice(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "?";
+  return v < 0.0001 ? v.toExponential(3) : v.toFixed(6);
+}
+
 export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, rangeCoverage, binStep, baseFee }) {
   if (hasActiveLiveMessage()) return;
-  const priceStr = priceRange
-    ? `Price range: ${priceRange.min < 0.0001 ? priceRange.min.toExponential(3) : priceRange.min.toFixed(6)} – ${priceRange.max < 0.0001 ? priceRange.max.toExponential(3) : priceRange.max.toFixed(6)}\n`
-    : "";
-  const coverageStr = rangeCoverage
-    ? `Range cover: ${fmtPct(rangeCoverage.downside_pct)} downside | ${fmtPct(rangeCoverage.upside_pct)} upside | ${fmtPct(rangeCoverage.width_pct)} total\n`
-    : "";
-  const poolStr = (binStep || baseFee)
-    ? `Bin step: ${binStep ?? "?"}  |  Base fee: ${baseFee != null ? baseFee + "%" : "?"}\n`
-    : "";
+  const rows = [
+    ["Amount", `◎${amountSol}`],
+    ["Bin step", binStep ?? undefined],
+    ["Base fee", baseFee != null ? `${baseFee}%` : undefined],
+  ];
+  if (priceRange) rows.push(["Range", `${fmtPrice(priceRange.min)} – ${fmtPrice(priceRange.max)}`]);
+  if (rangeCoverage) {
+    rows.push(["Down", fmtPct(rangeCoverage.downside_pct)]);
+    rows.push(["Up", fmtPct(rangeCoverage.upside_pct)]);
+    rows.push(["Width", fmtPct(rangeCoverage.width_pct)]);
+  }
   await sendHTML(
-    `✅ <b>Deployed</b> ${pair}\n` +
-    `Amount: ${amountSol} SOL\n` +
-    priceStr +
-    coverageStr +
-    poolStr +
-    `Position: <code>${position?.slice(0, 8)}...</code>\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    `🚀 <b>Deployed</b> — <b>${escapeHtml(pair)}</b>\n` +
+    htmlTable(rows) +
+    `\nPosition <code>${escapeHtml(String(position ?? "").slice(0, 8))}…</code>` +
+    `\nTx <code>${escapeHtml(String(tx ?? "").slice(0, 16))}…</code>`
   );
 }
 
 export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned }) {
   if (hasActiveLiveMessage()) return;
-  const sign = pnlUsd >= 0 ? "+" : "";
-  const returnedStr = solReturned != null ? `\nReturned: ◎${Number(solReturned).toFixed(4)} SOL` : "";
+  const up = (pnlUsd ?? 0) >= 0;
+  const sign = up ? "+" : "";
   await sendHTML(
-    `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)` +
-    returnedStr
+    `${up ? "🟢" : "🔴"} <b>Closed</b> — <b>${escapeHtml(pair)}</b>\n` +
+    htmlTable([
+      ["PnL", `${sign}$${(pnlUsd ?? 0).toFixed(2)}`],
+      ["PnL %", `${sign}${(pnlPct ?? 0).toFixed(2)}%`],
+      ["Returned", solReturned != null ? `◎${Number(solReturned).toFixed(4)}` : undefined],
+    ])
   );
 }
 
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(
-    `🔄 <b>Swapped</b> ${inputSymbol} → ${outputSymbol}\n` +
-    `In: ${amountIn ?? "?"} | Out: ${amountOut ?? "?"}\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    `🔄 <b>Swapped</b> — ${escapeHtml(inputSymbol)} → ${escapeHtml(outputSymbol)}\n` +
+    htmlTable([
+      ["In", amountIn ?? "?"],
+      ["Out", amountOut ?? "?"],
+    ]) +
+    `\nTx <code>${escapeHtml(String(tx ?? "").slice(0, 16))}…</code>`
   );
 }
 
 export async function notifyConfigChange(changes, { source } = {}) {
   if (hasActiveLiveMessage()) return;
   if (!Array.isArray(changes) || changes.length === 0) return;
-  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const lines = changes.map(({ key, from, to }) => `${key}: from ${from} to ${to}`);
   await sendHTML(
-    `⚙️ <b>Config change</b>${source ? ` (${esc(source)})` : ""}\n` +
-    `<pre>${esc(lines.join("\n"))}</pre>`
+    `⚙️ <b>Config change</b>${source ? ` — <i>${escapeHtml(source)}</i>` : ""}\n` +
+    htmlTable(changes.map(({ key, from, to }) => [key, `${from} → ${to}`]), { labelWidth: 24 })
   );
 }
 
 export async function notifyOutOfRange({ pair, minutesOOR }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(
-    `⚠️ <b>Out of Range</b> ${pair}\n` +
-    `Been OOR for ${minutesOOR} minutes`
+    `⚠️ <b>Out of Range</b> — <b>${escapeHtml(pair)}</b>\n` +
+    htmlTable([["Duration", `${minutesOOR}m`]])
+  );
+}
+
+/**
+ * Regime transition notice — states plainly that the change is memory-only,
+ * so the operator never mistakes it for an edit to their saved baseline.
+ */
+export async function notifyRegimeChange({ from, to, reason, changes }) {
+  if (hasActiveLiveMessage()) return;
+  const icon = to === "hot" ? "🔥" : to === "slow" ? "🐢" : "⚖️";
+  const rows = (changes || []).map(({ key, from: f, to: t }) => [key, `${f} → ${t}`]);
+  await sendHTML(
+    `${icon} <b>Regime ${escapeHtml(from)} → ${escapeHtml(to)}</b>\n` +
+    `<i>${escapeHtml(reason || "")}</i>\n` +
+    (rows.length ? htmlTable(rows, { labelWidth: 24 }) : "<pre>no config changes</pre>") +
+    `\n<i>In-memory only — your saved baseline is unchanged.</i>`
   );
 }
 

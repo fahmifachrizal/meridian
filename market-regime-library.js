@@ -27,10 +27,20 @@ function save(data) {
 }
 
 // ─── Default Regimes ────────────────────────────────────────────
-// `changes` uses the exact same flat keys as tools/executor.js's CONFIG_MAP,
-// so a profile can be handed straight to applyConfigChanges() with no
-// translation layer. Numbers adapted from setup.js's safe/moderate/degen
-// presets, reframed on the market-condition axis instead of risk-appetite.
+//
+// NOTE — `changes` is LEGACY and is no longer applied to config.
+//
+// These absolute maps used to be handed straight to applyConfigChanges(),
+// which persisted them and pushed them to Supabase — letting an automated
+// market read permanently overwrite the operator's own risk settings. That
+// path is gone. Config effects now come from regime-overlay.js, which derives
+// a BOUNDED, RATCHETED, in-memory-only overlay from the operator's baseline.
+//
+// What this file still owns: the `active` pointer, each regime's label and
+// description, the consecutive-fail counter, and the relax-suppression window.
+// The `changes` maps are kept only as human-readable documentation of each
+// regime's intent — see REGIME_TUNABLE in regime-overlay.js for what actually
+// takes effect.
 const DEFAULT_REGIMES = {
   slow: {
     id: "slow",
@@ -56,15 +66,15 @@ const DEFAULT_REGIMES = {
     description: "Typical market activity — bid_ask strategy, standard thresholds/exits/sizing.",
     changes: {
       strategy: "bid_ask",
-      minVolume: 2000,
-      minFeeActiveTvlRatio: 0.4,
-      minOrganic: 70,
+      minVolume: 1000,
+      minFeeActiveTvlRatio: 0.05,
+      minOrganic: 60,
       minTvl: 10000,
       maxTvl: 150000,
       stopLossPct: -15,
       takeProfitPct: 5,
       minAgeBeforeYieldCheck: 60,
-      deployAmountSol: 0.5,
+      deployAmountSol: 0.6,
       positionSizePct: 0.35,
     },
   },
@@ -159,4 +169,69 @@ export function getActiveRegime() {
   const db = load();
   if (!db.active || !db.regimes[db.active]) return null;
   return db.regimes[db.active];
+}
+
+// ─── Relaxation fallback ─────────────────────────────────────────
+// A tightened regime (e.g. "slow") lowers the screening thresholds it
+// feeds classifyRegime() from next cycle — so once candidates dry up to
+// zero, classifyRegime() gets an empty sample and fails open (no change),
+// and the regime can get stuck tight even after conditions recover. This
+// counter tracks consecutive no-deploy screening cycles so the cycle can
+// force a relax back to "normal" after N in a row, independent of the
+// classifier being able to see it.
+
+/**
+ * Record whether this screening cycle deployed. Resets the counter on a
+ * deploy, increments it otherwise. Returns the counter's new value.
+ */
+export function recordScreeningOutcome({ deployed }) {
+  const db = load();
+  db.consecutiveFails = deployed ? 0 : (db.consecutiveFails || 0) + 1;
+  save(db);
+  return db.consecutiveFails;
+}
+
+export function getConsecutiveFails() {
+  return load().consecutiveFails || 0;
+}
+
+export function resetConsecutiveFails() {
+  const db = load();
+  db.consecutiveFails = 0;
+  save(db);
+}
+
+// ─── Loopback suppression ────────────────────────────────────────
+// Relaxing alone would oscillate: relax to normal → immediately re-detect the
+// same regime → tighten → starve → relax again, forever. After a relax we
+// suppress *only the regime we just left* for a cooldown window. Other regimes
+// stay reachable, so the agent keeps adapting instead of freezing.
+
+/**
+ * Record that we just relaxed out of `fromRegime`, suppressing re-entry into
+ * it for `suppressMs`. Also zeroes the fail counter so the relax rule does not
+ * immediately re-fire on the next no-deploy cycle.
+ */
+export function noteRegimeRelax(fromRegime, suppressMs) {
+  const db = load();
+  db.consecutiveFails = 0;
+  db.suppressedRegime = fromRegime || null;
+  db.suppressedUntil = Date.now() + Number(suppressMs || 0);
+  save(db);
+  return { suppressedRegime: db.suppressedRegime, suppressedUntil: db.suppressedUntil };
+}
+
+/** True if `regimeId` is currently blocked from being re-entered. */
+export function isRegimeSuppressed(regimeId) {
+  if (!regimeId || regimeId === "normal") return false; // normal is always legal
+  const db = load();
+  if (db.suppressedRegime !== regimeId) return false;
+  return Number(db.suppressedUntil || 0) > Date.now();
+}
+
+export function clearRegimeSuppression() {
+  const db = load();
+  db.suppressedRegime = null;
+  db.suppressedUntil = 0;
+  save(db);
 }

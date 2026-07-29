@@ -21,15 +21,19 @@ import {
   editMessageWithButtons,
   answerCallbackQuery,
   notifyOutOfRange,
+  notifyRegimeChange,
   isEnabled as telegramEnabled,
   createLiveMessage,
   escapeHtml,
+  htmlTable,
 } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
-import { getActiveRegime, setActiveRegime, getRegimeProfile } from "./market-regime-library.js";
+import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRelax, isRegimeSuppressed } from "./market-regime-library.js";
 import { classifyRegime } from "./market-regime.js";
+import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime-overlay.js";
+import { CONFIG_MAP } from "./tools/executor.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote, recordRejection, getRecentRejectionCount } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
@@ -380,6 +384,48 @@ export async function runManagementCycle({ silent = false } = {}) {
   return mgmtReport;
 }
 
+// ─── Regime overlay application ──────────────────────────────────
+// The agent's ONLY channel for changing config. Bounded and ratcheted by
+// regime-overlay.js, and applied to the live in-memory config ONLY — never
+// written to user-config.json, never pushed to Supabase. Supabase is the
+// operator's source of truth and is pull-only for the agent, so a restart or
+// a Supabase pull always restores the operator's baseline.
+function applyRegimeOverlay(regimeId, reason, prevRegime) {
+  const baseline = readBaseline(repoPath("user-config.json"), config, CONFIG_MAP);
+  const overlay = computeRegimeOverlay(regimeId, baseline);
+  const changed = applyOverlayToLiveConfig(overlay, config, CONFIG_MAP);
+  setActiveRegime({ id: regimeId });
+
+  const detail = describeOverlay(overlay, baseline);
+  appendDecision({
+    type: regimeId === "normal" ? "regime_relax" : "regime_change",
+    actor: "SCREENER",
+    summary: `Regime ${prevRegime} → ${regimeId}`,
+    reason: `${reason} | overlay (memory-only): ${detail}`,
+  });
+  log("cron", `Market regime ${prevRegime} → ${regimeId} (${reason}) — overlay: ${detail}`);
+  notifyRegimeChange({ from: prevRegime, to: regimeId, reason, changes: changed }).catch(() => {});
+  return changed;
+}
+
+// Regime relaxation fallback — see recordScreeningOutcome() in
+// market-regime-library.js for why this is needed on top of classifyRegime().
+// Called once per screening-cycle outcome (deploy / no-deploy); after
+// `relaxAfterFails` consecutive no-deploy cycles it force-relaxes the active
+// regime back to "normal" regardless of what classifyRegime() itself can see,
+// then suppresses re-entry into the regime it just left so the pair of rules
+// cannot oscillate tighten→starve→relax→tighten forever.
+function noteScreeningResult(deployed) {
+  const fails = recordScreeningOutcome({ deployed });
+  if (deployed || !config.regime.enabled) return;
+  const activeId = getActiveRegime()?.id ?? "normal";
+  if (activeId === "normal" || fails < config.regime.relaxAfterFails) return;
+
+  applyRegimeOverlay("normal", `${fails} consecutive screening cycles with no deploy`, activeId);
+  noteRegimeRelax(activeId, config.regime.suppressMinutes * 60_000);
+  log("cron", `Regime ${activeId} suppressed for ${config.regime.suppressMinutes}m to prevent relax/re-tighten oscillation`);
+}
+
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_screeningBusy) {
     log("cron", "Screening skipped — previous cycle still running");
@@ -427,7 +473,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     return screenReport;
   }
   if (!silent && telegramEnabled()) {
-    liveMessage = await createLiveMessage("🔍 Screening Cycle", "Scanning candidates...");
+    liveMessage = await createLiveMessage("🔍 <b>Screening Cycle</b>", "Scanning candidates…", { parseMode: "HTML" });
   }
   timers.screeningLastRun = Date.now();
   log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
@@ -449,21 +495,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
         targets: config.opportunity,
         cutoffs: { slowCutoff: config.regime.slowCutoff, hotCutoff: config.regime.hotCutoff },
       });
-      const prevRegime = getActiveRegime()?.active ?? "normal";
-      if (regime && regime !== prevRegime) {
-        const profile = getRegimeProfile({ id: regime });
-        applyConfigChanges(profile.changes, {
-          reason: `regime_change ${prevRegime}→${regime} (median degenScore ${aggregateScore.toFixed(1)}, n=${sampleSize})`,
-          lessonTags: ["regime_change", "config_change"],
-        });
-        setActiveRegime({ id: regime });
-        appendDecision({
-          type: "regime_change",
-          actor: "SCREENER",
-          summary: `Regime switched ${prevRegime} → ${regime}`,
-          reason: `median degenScore=${aggregateScore.toFixed(1)} (slowCutoff=${config.regime.slowCutoff}, hotCutoff=${config.regime.hotCutoff})`,
-        });
-        log("cron", `Market regime switched ${prevRegime} → ${regime} (median degenScore ${aggregateScore.toFixed(1)}, n=${sampleSize})`);
+      // NOTE: getActiveRegime() returns the profile object, whose id lives on
+      // `.id` — the old `.active` read was always undefined, so prevRegime was
+      // permanently "normal" and every non-normal detection re-applied config.
+      const prevRegime = getActiveRegime()?.id ?? "normal";
+      if (regime && regime !== prevRegime && isRegimeSuppressed(regime)) {
+        log("cron", `Regime ${regime} detected but suppressed (recently relaxed out of it) — staying on ${prevRegime}`);
+      } else if (regime && regime !== prevRegime) {
+        applyRegimeOverlay(regime, `median degenScore ${aggregateScore.toFixed(1)}, n=${sampleSize}`, prevRegime);
       }
     }
 
@@ -559,6 +598,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         reason: combinedExamples || "All candidates filtered before deploy",
         rejected: combined.slice(0, 5).map((entry) => `${entry.name}: ${entry.reason}`),
       });
+      noteScreeningResult(false);
       return screenReport;
     }
 
@@ -588,6 +628,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           pool: passing[0].pool?.pool,
           pool_name: candidateName,
         });
+        noteScreeningResult(false);
         return screenReport;
       }
     }
@@ -732,6 +773,7 @@ IMPORTANT:
         summary: "LLM chose no deploy",
         reason: stripThink(content).slice(0, 500),
       });
+      noteScreeningResult(false);
     } else if (!deploySucceeded) {
       appendDecision({
         type: "no_deploy",
@@ -739,6 +781,9 @@ IMPORTANT:
         summary: deployAttempted ? "Deploy attempt did not succeed" : "No successful deploy in screening cycle",
         reason: stripThink(content).slice(0, 500),
       });
+      noteScreeningResult(false);
+    } else {
+      noteScreeningResult(true);
     }
   } catch (error) {
     log("cron_error", `Screening cycle failed: ${error.message}`);
@@ -747,8 +792,11 @@ IMPORTANT:
     _screeningBusy = false;
     if (!silent && telegramEnabled()) {
       if (screenReport) {
-        if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
-        else sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => { });
+        // The report is plain text (LLM-authored or built from pool names) and
+        // the live message is HTML-mode, so it must be escaped wholesale.
+        const body = escapeHtml(stripThink(screenReport));
+        if (liveMessage) await liveMessage.finalize(body).catch(() => {});
+        else sendHTML(`🔍 <b>Screening Cycle</b>\n\n${body}`).catch(() => { });
       }
     }
   }
