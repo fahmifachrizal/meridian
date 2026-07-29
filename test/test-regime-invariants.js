@@ -1,19 +1,20 @@
 /**
  * QA protocol — regime-specific "absolute state" contract tests.
  *
- * Companion to test/test-invariants.js on feat/add-new-guard (which covers
- * config sign/bounds, CONFIG_MAP consistency, degenScore bounds, and
- * getDeterministicCloseRule's rule precedence). This file locks in the
- * market-regime feature's own invariants: profile completeness and
- * classifyRegime()'s return-domain contract.
+ * Companion to test/test-invariants.js (which covers config sign/bounds,
+ * CONFIG_MAP consistency, degenScore bounds, and getDeterministicCloseRule's
+ * rule precedence). This file locks in the market-regime feature's own
+ * invariants: profile completeness and classifyRegime()'s return-domain
+ * contract.
  *
- * NOTE: depends on test/lib/test-kit.js and tools/executor.js's exported
- * CONFIG_MAP, both introduced on feat/add-new-guard — this file won't run
- * standalone until the branches are merged. That's expected, not a bug.
+ * NOTE: the `changes` maps checked here (in market-regime-profiles.json) are
+ * legacy documentation only — they are no longer applied to live config. The
+ * bounded, ratcheted overlay that actually runs lives in regime-overlay.js
+ * and is covered by test/test-regime-overlay.js and test/test-regime-state.js.
  *
  * Offline, no network, no wallet.
  *
- * Run (after merging with feat/add-new-guard): node test/test-regime-invariants.js
+ * Run: node test/test-regime-invariants.js
  */
 
 import { createSuite } from "./lib/test-kit.js";
