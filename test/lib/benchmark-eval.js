@@ -5,13 +5,13 @@
  *
  * Scope: replays guard #1 (repeat-deploy cooldown), guard #6 (token-age
  * window), and guard #7 (repeat-deploy size taper + tightened stop-loss)
- * for the deploy-gate decision, and rules 1/2/6 of
+ * for the deploy-gate decision, and rules 1/2/4 of
  * getDeterministicCloseRule for the exit (via each position's recorded
  * `timeline`). Guards #2/#3/#5 are NOT replayed — they need
  * rejection/TVL-snapshot/pool-average history this fixture doesn't carry
- * meaningfully, and rules 3/4/5 can't fire from `timeline` (it lacks
+ * meaningfully, and rules 3/5/6 can't fire from `timeline` (it lacks
  * active_bin/upper_bin/fee_per_tvl_24h) — a timeline that never trips
- * 1/2/6 falls back to the position's actual historical outcome. See
+ * 1/2/4 falls back to the position's actual historical outcome. See
  * test/test-benchmark-eval.js and test/fixtures/README.md.
  */
 
@@ -84,7 +84,7 @@ export function wouldDeployUnderConfig(cfg, position, poolMemory) {
 
 /**
  * Replays a position's recorded `timeline` through getDeterministicCloseRule
- * using `mgmtConfig`. Only rules 1 (stop-loss), 2 (take-profit), and 6
+ * using `mgmtConfig`. Only rules 1 (stop-loss), 2 (take-profit), and 4
  * (fast-exit) can ever fire — see file header. Falls back to the position's
  * actual historical outcome if nothing in the timeline trips a rule.
  *
@@ -102,7 +102,7 @@ export function simulateExitUnderConfig(mgmtConfig, position, stopLossOverride) 
       stop_loss_pct_override: stopLossOverride ?? null,
     };
     const result = getDeterministicCloseRule(fakePosition, mgmtConfig);
-    if (result && [1, 2, 6].includes(result.rule)) {
+    if (result && [1, 2, 4].includes(result.rule)) {
       return { pnl_pct: tick.pnl_pct, rule: result.rule, reason: result.reason, tick, source: "replay" };
     }
   }

@@ -101,7 +101,7 @@ for (const pos of fixture.positions) {
 
   console.log(`  guard #1 (repeat-deploy cooldown, seq=${pos.deploy_sequence}): ${g1 === null ? "insufficient data" : g1 ? "WOULD BLOCK" : "allows"}`);
   console.log(`  guard #6 (token-age window, pool age ${pos.pool_age_hours_at_deploy?.toFixed(2)}h): ${g6 === null ? "insufficient data" : g6 ? "WOULD BLOCK" : "allows"}`);
-  console.log(`  timeline replay (rules 1/2/6 only): ${replay ? `rule ${replay.rule} "${replay.reason}" at age ${replay.tick.age_minutes}m` : "no rule fires (needs rule 3/4/5 data not captured historically)"}`);
+  console.log(`  timeline replay (rules 1/2/4 only): ${replay ? `rule ${replay.rule} "${replay.reason}" at age ${replay.tick.age_minutes}m` : "no rule fires (needs rule 3/5/6 data not captured historically)"}`);
 
   if (pos.tag === "big_loss") {
     const caught = g1 === true || g6 === true || replay !== null;

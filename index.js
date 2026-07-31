@@ -1036,10 +1036,16 @@ export function getDeterministicCloseRule(position, managementConfig) {
     return false;
   })();
 
-  // Guard #7: a repeat deploy tapered at entry gets a tighter, position-specific
-  // stop-loss (set on the position at deploy time) instead of the global default.
+  // Guard #5 (repeat-deploy size taper): a repeat deploy tapered at entry
+  // gets a tighter, position-specific stop-loss (set on the position at
+  // deploy time) instead of the global default.
   const effectiveStopLossPct = position.stop_loss_pct_override ?? managementConfig.stopLossPct;
 
+  // Rules 1-6 below are numbered in execution/precedence order — the order
+  // they're checked in is the order that matters when a position matches
+  // more than one condition at once. See guards/README or CLAUDE.md's
+  // "Market regime overlay" section for the guard-numbering scheme this
+  // mirrors on the deploy side.
   if (!pnlSuspect && position.pnl_pct != null && position.pnl_pct <= effectiveStopLossPct) {
     return { action: "CLOSE", rule: 1, reason: "stop loss" };
   }
@@ -1053,10 +1059,11 @@ export function getDeterministicCloseRule(position, managementConfig) {
   ) {
     return { action: "CLOSE", rule: 3, reason: "pumped far above range" };
   }
-  // Guard #4: don't wait out the full OOR timer if the position is already
-  // bleeding meaningfully — SalaryCat-SOL went OOR at 20:09 and didn't close
-  // until 20:19 at -35.96% because the full stop-loss/OOR-wait rules are
-  // independent lagging brakes. Close immediately once both conditions hold.
+  // Guard #6 (fast OOR + negative-PnL exit): don't wait out the full OOR
+  // timer if the position is already bleeding meaningfully — SalaryCat-SOL
+  // went OOR at 20:09 and didn't close until 20:19 at -35.96% because the
+  // full stop-loss/OOR-wait rules are independent lagging brakes. Close
+  // immediately once both conditions hold.
   if (
     managementConfig.fastExitOnOorEnabled &&
     !pnlSuspect &&
@@ -1064,7 +1071,7 @@ export function getDeterministicCloseRule(position, managementConfig) {
     position.in_range === false &&
     position.pnl_pct <= effectiveStopLossPct * (managementConfig.fastExitStopLossFraction ?? 0.5)
   ) {
-    return { action: "CLOSE", rule: 6, reason: `Fast exit: OOR + PnL ${position.pnl_pct}% past ${managementConfig.fastExitStopLossFraction ?? 0.5} of stop-loss` };
+    return { action: "CLOSE", rule: 4, reason: `Fast exit: OOR + PnL ${position.pnl_pct}% past ${managementConfig.fastExitStopLossFraction ?? 0.5} of stop-loss` };
   }
   if (
     position.active_bin != null &&
@@ -1072,14 +1079,14 @@ export function getDeterministicCloseRule(position, managementConfig) {
     position.active_bin > position.upper_bin &&
     (position.minutes_out_of_range ?? 0) >= managementConfig.outOfRangeWaitMinutes
   ) {
-    return { action: "CLOSE", rule: 4, reason: "OOR" };
+    return { action: "CLOSE", rule: 5, reason: "OOR" };
   }
   if (
     position.fee_per_tvl_24h != null &&
     position.fee_per_tvl_24h < managementConfig.minFeePerTvl24h &&
     (position.age_minutes ?? 0) >= managementConfig.minAgeBeforeYieldCheck
   ) {
-    return { action: "CLOSE", rule: 5, reason: "low yield" };
+    return { action: "CLOSE", rule: 6, reason: "low yield" };
   }
   return null;
 }

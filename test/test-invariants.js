@@ -120,16 +120,16 @@ section("getDeterministicCloseRule() — position lifecycle rule precedence");
   check("rule 2 — take profit", rule({ pnl_pct: 6 })?.rule === 2);
   check("rule 3 — pumped far above range", rule({ active_bin: 111 })?.rule === 3);
   check(
-    "rule 6 — fast exit (OOR + past half stop-loss, before full OOR wait)",
-    rule({ in_range: false, pnl_pct: -20, minutes_out_of_range: 5 })?.rule === 6,
+    "rule 4 — fast exit (OOR + past half stop-loss, before full OOR wait)",
+    rule({ in_range: false, pnl_pct: -20, minutes_out_of_range: 5 })?.rule === 4,
   );
   check(
-    "rule 4 — OOR wait (pumped mildly above range, held past the wait timer)",
-    rule({ active_bin: 105, minutes_out_of_range: 31, pnl_pct: -5 })?.rule === 4,
+    "rule 5 — OOR wait (pumped mildly above range, held past the wait timer)",
+    rule({ active_bin: 105, minutes_out_of_range: 31, pnl_pct: -5 })?.rule === 5,
   );
   check(
-    "rule 5 — low yield (fee/TVL below floor, age past the age gate)",
-    rule({ fee_per_tvl_24h: 3, age_minutes: 90 })?.rule === 5,
+    "rule 6 — low yield (fee/TVL below floor, age past the age gate)",
+    rule({ fee_per_tvl_24h: 3, age_minutes: 90 })?.rule === 6,
   );
   check(
     "low yield does NOT fire before minAgeBeforeYieldCheck",
@@ -140,7 +140,7 @@ section("getDeterministicCloseRule() — position lifecycle rule precedence");
     getDeterministicCloseRule(
       { ...basePosition, fee_per_tvl_24h: 3, age_minutes: 20 },
       { ...mgmt, minAgeBeforeYieldCheck: 15 },
-    )?.rule === 5,
+    )?.rule === 6,
   );
 
   // Precedence: a position matching stop-loss AND take-profit AND OOR-wait

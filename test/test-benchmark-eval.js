@@ -116,7 +116,7 @@ section("simulateExitUnderConfig — exit replay via timeline");
 {
   const worm = positionByPool("WORM-SOL");
   const wormExit = simulateExitUnderConfig(BENCH_CONFIG.management, worm, null);
-  check("WORM replay fires rule 6 (fast-exit)", wormExit.rule === 6);
+  check("WORM replay fires rule 4 (fast-exit)", wormExit.rule === 4);
   check("WORM replay source is 'replay', not fallback", wormExit.source === "replay");
   check("WORM replay pnl_pct matches the -29.7% tick", approx(wormExit.pnl_pct, -29.7, 0.01));
   check("WORM replay fires at age 29m — 16 minutes before the real -44.21% close", wormExit.tick.age_minutes === 29);
