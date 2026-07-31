@@ -85,11 +85,15 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 | `cli.js` | 676 | One-shot CLI; every tool exposed as a subcommand. Also writes a `~/.meridian/SKILL.md` at startup for agent discovery. Loads `.env`/`user-config.json` from `~/.meridian/` if present, else from cwd. |
 | `setup.js` | ~750 | Interactive first-run wizard. Three presets (degen/moderate/safe) + custom. Covers strategy, screening filters, position sizing, trailing TP, per-role models. |
 | **Config & state** | | |
-| `config.js` | 278 | Loads `user-config.json` → live `config` object. Sections: `risk`, `screening`, `management`, `strategy`, `schedule`, `llm`, `darwin`, `tokens`, `hiveMind`, `api`, `jupiter`, `indicators`. Exposes `computeDeployAmount(walletSol)`, `reloadScreeningThresholds()`. `MIN_SAFE_BINS_BELOW = 35` (exported). |
+| `config.js` | 278 | Loads `user-config.json` → live `config` object. Sections: `risk`, `screening`, `management`, `strategy`, `schedule`, `llm`, `darwin`, `tokens`, `hiveMind`, `api`, `jupiter`, `indicators`, `regime`. Exposes `computeDeployAmount(walletSol)`, `reloadScreeningThresholds()`. `MIN_SAFE_BINS_BELOW = 35` (exported). |
 | `prompt.js` | 176 | `buildSystemPrompt(agentType, …)`. Three role-specific prompts. MANAGER is intentionally lean (positions pre-loaded into goal). SCREENER gets bins_below formula. |
+| `market-regime.js` | 48 | `classifyRegime(candidates, {targets, cutoffs})` — pure, side-effect-free (no I/O). Median `degenScore()` across a cycle's candidates vs `slowCutoff`/`hotCutoff` → `"slow"`/`"normal"`/`"hot"`/`null` (empty sample fails open to `null`, meaning "no re-evaluation possible this cycle"). |
+| `market-regime-library.js` | ~190 | Persists `market-regime-profiles.json`: `active` regime pointer, `consecutiveFails` counter, `suppressedRegime`/`suppressedUntil` window. The `changes` maps under each regime id are **legacy documentation only** — no longer applied to config (see `regime-overlay.js`). `recordScreeningOutcome({deployed})`, `noteRegimeRelax(fromRegime, suppressMs)`, `isRegimeSuppressed(id)`, `clearRegimeSuppression()`. |
+| `regime-overlay.js` | ~140 | **The only code path that actually changes config for a regime.** `computeRegimeOverlay(regimeId, baseline)` — bounded + ratcheted, pure function. `REGIME_TUNABLE` is the exhaustive whitelist of 8 keys a regime may touch (4 screening, 4 risk). Risk keys (`deployAmountSol`, `positionSizePct`, `stopLossPct`) are ratcheted: a regime can only ever move them toward LESS exposure than `baseline`, never more — this is what stops a "hot" (volatile) regime from sizing up into the exact conditions that produced the original SalaryCat-SOL loss. `applyOverlayToLiveConfig()` mutates the in-memory `config` object ONLY — never writes `user-config.json`, never pushes Supabase. `readBaseline()` reads the operator's own `user-config.json` (falling back to live config per key) as the reference the overlay is derived FROM. See README's "Market regime state machine" diagram for the full picture. |
 | **Tools layer** | | |
 | `tools/definitions.js` | 1124 | OpenAI-format tool schemas. **Source of truth for what the LLM sees.** All 40+ tool names listed. |
-| `tools/executor.js` | 844 | `executeTool(name, args)`. Pre-flight safety checks for `PROTECTED_TOOLS = {deploy, claim, close, swap, self_update}`. Validates pool thresholds via fresh pool discovery call before deploy. Post-tool side-effects: telegram notifications, pool-memory auto-annotation on `low yield` close, auto-swap base→SOL on close. |
+| `tools/executor.js` | ~1100 | `executeTool(name, args)`. Pre-flight safety checks for `PROTECTED_TOOLS = {deploy, claim, close, swap, self_update}`. Validates pool thresholds via fresh pool discovery call before deploy. Post-tool side-effects: telegram notifications, pool-memory auto-annotation on `low yield` close, auto-swap base→SOL on close. `CONFIG_MAP` is exported (used by `test-invariants.js`, `regime-overlay.js`'s whitelist check, `market-regime-invariants.js`). `applyConfigChanges()` (the shared apply+persist logic behind `update_config`) writes `user-config.json` locally but **does not** push to Supabase anymore — see `supabase-config.js` below. |
+| `supabase-config.js` | ~130 | `pullSupabaseConfig()` — the agent's ONLY sanctioned Supabase interaction, called on startup + every 15 min (`startSupabaseConfigBackgroundSync`). Remote wins on any key it has, merges into `user-config.json`, reloads live config. `pushSupabaseConfig()` still exists (used only by `scripts/push-config.js`, an operator-run CLI) but is **never called from anywhere in the running agent** — Supabase is the operator's source of truth and is pull-only for the agent by design. |
 | `tools/dlmm.js` | huge | Meteora DLMM SDK wrapper. **Lazy-loads** `@meteora-ag/dlmm` to avoid CJS-import-time crash in DRY_RUN/test. Pool cache (5 min), metadata cache (15 min), positions cache (5 min TTL + inflight dedup). `deployPosition`, `getMyPositions`, `getPositionPnl`, `getActiveBin`, `closePosition`, `claimFees`, `searchPools`, `getWalletPositions`, `addLiquidity`, `withdrawLiquidity`. Also has relay-mode (zap-in via LPAgent) and wide-range path (multi-tx `createExtendedEmptyPosition` + `addLiquidityByStrategyChunkable` for >69 bin ranges). Asserts Meteora bin-array initialization rent never charged. |
 | `tools/screening.js` | 862 | `discoverPools`, `getTopCandidates` (hard filter + enrich + score), `getPoolDetail`. Scoring = `fee_tvl*1000 + organic*10 + vol/100 + holders/100`. Has Discord signal merge/only modes, PVP-rival detection. |
 | `tools/wallet.js` | 251 | `getWalletBalances` (Helius), `swapToken` (Jupiter Swap V2). `normalizeMint` collapses "SOL"/"native"/any So1-prefixed token to wrapped-SOL. Built-in referral: 50 bps to a fixed address (configurable). |
@@ -110,14 +114,16 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 | `dev-blocklist.js` | 66 | Deployer wallet → reason. Hard-filtered before LLM, fetched from Jupiter dev field. |
 | `hivemind.js` | 346 | Agent Meridian shared learning. `bootstrapHiveMind` on startup, `startHiveMindBackgroundSync` every 15 min. Pushes lessons + performance events; pulls shared lessons + presets. `getSharedLessonsForPrompt` → injected under `── HIVEMIND ──` in prompt. Failures are non-blocking. |
 | **Integrations** | | |
-| `telegram.js` | 494 | `startPolling(onMessage)`, `stopPolling()`. Long-poll with 35s abort. `createLiveMessage` returns a handle with `toolStart/toolFinish/note/finalize/fail` for live progress. Sends deploy/close/swap/OOR notifications. Auth: `isAuthorizedIncomingMessage` (chatId match + group→allowed user IDs). Registers `/help` `/status` `/positions` `/close` `/closeall` `/set` `/settings` `/setcfg` `/screen` `/candidates` `/deploy` `/briefing` `/hive` `/pause` `/resume` `/stop` via `setMyCommands`. |
+| `telegram.js` | ~590 | `startPolling(onMessage)`, `stopPolling()`. Long-poll with 35s abort. `createLiveMessage` returns a handle with `toolStart/toolFinish/note/finalize/fail` for live progress; supports `{parseMode: "HTML"}`. `htmlTable(rows, {labelWidth})` is the shared house style — aligned `<pre>` label/value blocks, both sides escaped via `escapeHtml()`. Sends deploy/close/swap/OOR/**regime-change** notifications, all HTML, all escaped. `notifyRegimeChange({from, to, reason, changes})` explicitly states the change is in-memory-only so it's never mistaken for a saved-baseline edit. Auth: `isAuthorizedIncomingMessage` (chatId match + group→allowed user IDs). Registers `/help` `/status` `/positions` `/close` `/closeall` `/set` `/settings` `/setcfg` `/screen` `/candidates` `/deploy` `/briefing` `/hive` `/pause` `/resume` `/stop` via `setMyCommands`. |
 | `discord-listener/index.js` | 152 | Selfbot (uses `discord.js-selfbot-v13`). Listens to `DISCORD_CHANNEL_IDS` for `Metlex Pool Bot`, extracts Solana addresses, runs pre-check pipeline, appends to `discord-signals.json`. |
 | `discord-listener/pre-checks.js` | 205 | Pipeline: dedup (10min) → blacklist → pool resolution (Meteora direct → DexScreener) → rugcheck.xyz (score>50000 OR top10>60% reject) → deployer blacklist → Jupiter global fees check (`minTokenFeesSol`). |
 | `briefing.js` | 71 | HTML daily report. 24h activity, performance, lessons, current portfolio. Sent at 1:00 UTC. |
 | `envcrypt.js` | 121 | XOR-cipher with a key from `.envrypt`/`ENVRYPT_KEY`. Encrypts anything matching `*_KEY`, `*SECRET*`, `*TOKEN*`, `*MNEMONIC*`, etc. The `# encrypted` marker in `.env` precedes encrypted lines. |
 | `logger.js` | 75 | Daily-rotating `logs/agent-YYYY-MM-DD.log`. `logAction({tool, args, result, duration_ms, success})` writes JSONL `actions-YYYY-MM-DD.jsonl` audit trail. Level via `LOG_LEVEL` env. |
 | **Other** | | |
-| `discord-listener/`, `test/`, `scripts/`, `utils/` | | Discord listener (above), syntax-checked tests, envcrypt CLI, `safeNumber`. |
+| `discord-listener/`, `test/`, `utils/` | | Discord listener (above), syntax-checked tests, `safeNumber`. |
+| `scripts/push-config.js` | ~50 | **Operator-only**, never called by the agent. Publishes local `user-config.json` to Supabase. Dry-run by default (lists keys + flags secret-looking values); `--yes` actually pushes. |
+| `scripts/pull-vps-state.sh` + `scripts/reconcile-user-config.js` | | **Operator-only**, pull-only in both directions (VPS and Supabase). Pulls the VPS's live JSON state files verbatim (they're ground truth for a running agent); `user-config.json` is reconciled instead of overwritten, priority Supabase > local > VPS (VPS only fills gaps, never overrides). Config via `scripts/.env.vps` (gitignored, template at `scripts/.env.vps.example`). Run via `npm run pull:vps`. **Gotcha already fixed once**: `scp` uses `-P` (capital) for port, `ssh` uses `-p` — do not share one options array between them, or every `scp` silently fails (misparses the port as a source path). |
 | `.claude/agents/{screener,manager}.md` | | Claude Code sub-agent configs — used when you run `claude` inside the repo. |
 | `.claude/commands/*.md` | | Slash commands (`/screen`, `/manage`, `/balance`, `/candidates`, `/pool-ohlcv`, etc.) that wrap `cli.js`. |
 | `.claude/settings.json` | | Denies `rm -rf`, `wget`, `Read(./.env*)`. **Forbids `run_in_background: true` via a PreToolUse hook.** |
@@ -214,6 +220,43 @@ The management cycle is **mostly deterministic in JS, LLM only for the hard case
 9. **LLM** gets the blocks + active strategy + balance + computed deploy amount + bins_below formula. The LLM is *forced* via `tool_choice: "required"` on step 0.
 10. **Post-deploy**: `appendDecision` with full context. Darwinian signals (if enabled) get consumed via `getAndClearStagedSignals`.
 
+Regime detection/overlay (below) runs between steps 2 and the rest — right after `getTopCandidates()` returns this cycle's candidate set, before `deployAmount`/`strategyBlock` are computed, so a same-cycle regime switch is reflected in this cycle's sizing and prompt.
+
+---
+
+## Market regime overlay
+
+Detects Slow/Normal/Hot from the current screening cycle's candidates and adjusts config accordingly — but through a **bounded, ratcheted, in-memory-only** channel, not the absolute apply-and-persist path an earlier version of this feature used. See README's "Market regime state machine" and "Regime change ↔ open positions" diagrams for the full picture; this section is the engineering summary.
+
+**Why bounded/ratcheted at all**: the original design handed a profile's *absolute* `changes` map straight to `applyConfigChanges()`, which persisted to `user-config.json` and pushed to Supabase — an automated market read could permanently overwrite the operator's own risk settings. Worse, its `hot` profile sized **up** (`deployAmountSol`, `positionSizePct`) and widened the stop-loss in the most volatile conditions — the exact shape of the SalaryCat-SOL loss this repo was built to prevent. `regime-overlay.js` replaces that.
+
+**The flow, once per screening cycle** (`index.js`'s `runScreeningCycle`):
+1. `classifyRegime(candidates, {targets, cutoffs})` → `"slow"`/`"normal"`/`"hot"`/`null`.
+2. `prevRegime = getActiveRegime()?.id ?? "normal"` — **read `.id`, not `.active`**. A profile object exposes `id`; only the top-level store object has `.active`. This was a real bug (fixed): reading `.active` off the profile made `prevRegime` permanently `"normal"`, so every non-normal detection re-applied config every single cycle. If you ever see repeated identical `[SELF-TUNED]` lessons piling up, check this first.
+3. If `regime !== prevRegime` and `!isRegimeSuppressed(regime)`: `applyRegimeOverlay(regime, reason, prevRegime)` (in `index.js`) — calls `readBaseline()` + `computeRegimeOverlay()` + `applyOverlayToLiveConfig()`, then `setActiveRegime()`, then logs a `regime_change` decision + sends `notifyRegimeChange()`.
+4. If `regime !== prevRegime` but suppressed: no-op, just logs why.
+
+**The relax/loopback-suppression fallback** — a *separate* mechanism, needed because #3 alone can starve itself: a tightened regime lowers the discovery filters `classifyRegime` samples from next cycle, so once candidates hit zero, the classifier gets an empty sample and fails open (`null` = no re-evaluation), and the regime can get stuck tight even after conditions recover.
+- `noteScreeningResult(deployed)` runs after **every** screening outcome (all 4 no-deploy exit points + the success path). `recordScreeningOutcome({deployed})` increments/resets a persisted fail counter.
+- After `config.regime.relaxAfterFails` (default 3) consecutive no-deploy cycles with `activeId !== "normal"`: force-relax to `normal` via the same `applyRegimeOverlay()` path, then `noteRegimeRelax(activeId, suppressMinutes * 60_000)` — zeroes the counter AND suppresses re-entry into `activeId` for `config.regime.suppressMinutes` (default 120min). Other regimes stay reachable; only the one just left is blocked, so this can't freeze adaptation, only break the specific tighten→starve→relax→re-tighten loop.
+
+**`regime-overlay.js`'s `REGIME_TUNABLE`** is the exhaustive whitelist — nothing outside these 8 keys is regime-tunable, and `maxPositions`/`maxDeployAmount` are deliberately absent (portfolio ceilings stay 100% operator-owned):
+
+| Key | Kind | Mode | slow factor | hot factor | Bound |
+|---|---|---|---|---|---|
+| `minTvl` | screening | mult | 0.7 | 1.5 | relative 0.5–3.0× baseline |
+| `minVolume` | screening | mult | 0.6 | 1.5 | relative 0.4–3.0× baseline |
+| `minFeeActiveTvlRatio` | screening | mult | 0.6 | 1.6 | relative 0.4–3.0× baseline |
+| `minOrganic` | screening | delta | −6 | +6 | absolute 40–95 |
+| `deployAmountSol` | risk, **ratchet: down** | mult | 0.85 | 0.6 | absolute 0.05–50, never > baseline |
+| `positionSizePct` | risk, **ratchet: down** | mult | 0.85 | 0.6 | absolute 0.05–0.9, never > baseline |
+| `stopLossPct` | risk, **ratchet: up** | mult | 0.7 | 0.8 | absolute −60 to −1, never looser than baseline |
+| `takeProfitPct` | risk, unratcheted | mult | 0.8 | 1.4 | absolute 1–50 |
+
+The ratchet is applied **last**, after every other clamp, so it always wins — even a pathological baseline can't produce an overlay that authorizes more risk than the operator set. `normal` always returns `{}` (exact no-op; baseline stands). Unknown/null regime id also returns `{}` (fails safe).
+
+**Adding a new regime-tunable key**: add it to `REGIME_TUNABLE` with a real `CONFIG_MAP` entry (checked by `test:regime-overlay`'s whitelist-integrity test), decide `mode` (`mult` for proportional, `delta` for additive), pick `slow`/`hot` factors, and — critically — decide whether it needs `ratchet: "down"`/`"up"` (anything that changes loss exposure should be ratcheted; anything that doesn't, like `takeProfitPct`, doesn't need to be).
+
 ---
 
 ## Position lifecycle
@@ -271,6 +314,7 @@ auto-swap on close (executor.js:610)
 | `decision-log.json` | `{ decisions: [{id, ts, type, actor, pool, summary, reason, risks[], metrics{}, rejected[]}] }` max 100 | `decision-log.js` (called from deploy/close/skip in `tools/dlmm.js`, `index.js`) |
 | `signal-weights.json` | `{ weights: {signal: 0.3-2.5}, last_recalc, recalc_count, history[] }` | `signal-weights.js` |
 | `strategy-library.json` | `{ active: <id>, strategies: { [id]: {id, name, author, lp_strategy, token_criteria, entry, range, exit, best_for, raw} } }` | `strategy-library.js` |
+| `market-regime-profiles.json` | `{ active: "slow"\|"normal"\|"hot", consecutiveFails, suppressedRegime, suppressedUntil, regimes: { [id]: {id, label, description, changes} } }` — `changes` is **legacy documentation only**, no longer applied (see `regime-overlay.js`) | `market-regime-library.js` |
 | `smart-wallets.json` | `{ wallets: [{name, address, category, type, addedAt}] }` | `smart-wallets.js` |
 | `token-blacklist.json` | `{ [mint]: {symbol, reason, added_at, added_by} }` | `token-blacklist.js` |
 | `dev-blocklist.json` | `{ [wallet]: {label, reason, added_at} }` | `dev-blocklist.js` |
@@ -302,6 +346,7 @@ All persistent files are loaded/saved on each call — no in-memory caching laye
 | `api` | `url`, `publicApiKey`, `lpAgentRelayEnabled` | `https://api.agentmeridian.xyz/api`, built-in key, false |
 | `jupiter` | `apiKey`, `referralAccount`, `referralFeeBps` | env override, fixed referral, 50 bps |
 | `indicators` | `enabled`, `entryPreset`, `exitPreset`, `rsiLength`, `intervals`, `candles`, `rsiOversold`, `rsiOverbought`, `requireAllIntervals` | false, supertrend_break, supertrend_break, 2, ["5_MINUTE"], 298, 30, 80, false |
+| `regime` | `enabled`, `slowCutoff`, `hotCutoff`, `relaxAfterFails`, `suppressMinutes` | true, 15, 45, 3, 120 |
 
 `update_config` (executor.js:333) uses a flat-key `CONFIG_MAP` (50+ entries) that knows how to (a) coerce booleans/arrays/strings/numbers, (b) clamp `binsBelow*` to `MIN_SAFE_BINS_BELOW=35`, (c) restart cron if `managementIntervalMin` / `screeningIntervalMin` changed, (d) write a `[SELF-TUNED]` lesson.
 
@@ -334,11 +379,26 @@ All persistent files are loaded/saved on each call — no in-memory caching laye
 | `DISCORD_MIN_FEES_SOL` | no | Default 5. |
 | `ENVRYPT_KEY` / `ENVCRYPT_KEY` | no | Key for `.env` XOR encryption (line-by-line marked with `# encrypted`). |
 | `HIVE_MIND_URL` / `HIVE_MIND_API_KEY` | no | Override defaults. |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_DB_SCHEMA` / `SUPABASE_DB_TABLENAME` | no | Enables `supabase-config.js`. See "Supabase & VPS sync" below. |
 
 Encrypted env flow (optional, see `scripts/envrypt.js`):
 1. Save plain values to `.env.raw`.
 2. `printf "long-local-key\n" > .envrypt`.
 3. `npm run env:encrypt` reads `.env.raw`, encrypts anything matching `*_KEY`/`*SECRET*`/`*TOKEN*`/`*MNEMONIC*`/etc., writes `.env`. Originals are XOR'd with a positional repeating key — **not** cryptographically secure, but obscures values in plaintext grep.
+
+---
+
+## Supabase & VPS sync
+
+**Supabase is pull-only for the running agent, by design.** `pullSupabaseConfig()` (`supabase-config.js`) is the only Supabase call anywhere in the live agent path — startup + every 15 min, remote-wins merge into `user-config.json`. Nothing in `tools/executor.js`'s `applyConfigChanges()` (the shared logic behind `update_config` and, indirectly, the old regime path) pushes to Supabase anymore. If you're tempted to add a push call from agent code: don't — that was the exact bug this session fixed (an automated decision could permanently overwrite the operator's baseline).
+
+**Publishing a new baseline is an explicit human action**: `node scripts/push-config.js --yes` (dry-run without `--yes` — lists keys, flags anything secret-looking via a `/apikey|secret|mnemonic|...long-string/` heuristic).
+
+**Pulling a dev/audit copy of the live VPS state** is a separate, also-operator-only, also-pull-only script: `npm run pull:vps` (`scripts/pull-vps-state.sh` + `scripts/reconcile-user-config.js`). Config in `scripts/.env.vps` (gitignored, template in `scripts/.env.vps.example`).
+- Most JSON files are pulled **verbatim** — the VPS's live running agent is ground truth for `state.json`, `pool-memory.json`, `decision-log.json`, `lessons.json`, `hivemind-cache.json`, `signal-weights.json`, `strategy-library.json`, `market-regime-profiles.json` (plus `smart-wallets.json`/`token-blacklist.json`/`dev-blocklist.json`/`discord-signals.json` if present — skipped silently if not, matching their existing fail-open design).
+- `user-config.json` is **reconciled, never overwritten wholesale** — priority Supabase (calls `pullSupabaseConfig()`, the same path the agent uses) > local machine's current file > VPS copy (lowest priority, gap-fill only — a key both local and VPS have is never taken from VPS).
+- **Known gotcha, already hit once**: `ssh` uses `-p` for port, `scp` uses `-P` (capital) — sharing one options array between them makes every `scp` call silently fail (it treats the port number as a source-file argument and the copy just does nothing, no error surfaced unless you drop the `>/dev/null 2>&1` redirect). The script uses separate `SSH_OPTS`/`SCP_OPTS` arrays now; don't merge them back.
+- **Known gotcha, operationally important**: because `lessons.json` is pulled verbatim from a VPS that's *independently generating lessons in real time*, a local cleanup of `lessons.json` (e.g. stripping stale `[SELF-TUNED]` regime-hysteresis spam — see "Known issues" below) does **not** touch the VPS's own copy. The next `pull:vps` run will reintroduce whatever noise the VPS accumulated in between. If you clean local lesson history, the durable fix has to happen upstream (fix the bug producing the noise) — a local-only cleanup is cosmetic and temporary until the next pull.
 
 ---
 
@@ -400,31 +460,30 @@ Standalone process — `cd discord-listener && npm install && npm start`. Shares
 
 `npm test` is the gate — it must stay green through any change to `config.js`,
 `tools/executor.js`'s `CONFIG_MAP`, `getDeterministicCloseRule` (index.js),
-or any of the 7 post-mortem guards. It runs, in order: `test:syntax` (every
-`.js` file, `node --check`), `test:guards`, `test:invariants`,
-`test:benchmark`, `test:benchmark-eval` — all offline, no network, no
-wallet, no live agent. (`test:regime` — `classifyRegime()`'s decision tree
-and `market-regime-library.js`'s profile store — lives on
-`feat/add-regime-check`; both branches' suites merge into one `npm test`
-gate once combined.)
+`regime-overlay.js`'s `REGIME_TUNABLE`, or any of the 7 post-mortem guards.
+It runs, in order: `test:syntax`, `test:guards`, `test:invariants`,
+`test:regime`, `test:regime-invariants`, `test:regime-overlay`,
+`test:regime-state`, `test:benchmark`, `test:benchmark-eval` — all offline,
+no network, no wallet, no live agent. 168 checks total as of this writing.
 
 | Script | Covers |
 |---|---|
 | `test:syntax` | Every file in the repo parses. |
 | `test:guards` | The 7 SalaryCat-SOL post-mortem guards (token-age window, rejection hysteresis, TVL decline check). |
 | `test:invariants` | **"Absolute state" contract tests** — see below. This is the one future changes are most likely to break, and the one that matters most. |
+| `test:regime` | `classifyRegime()`'s decision tree + `market-regime-library.js`'s profile store, active-pointer persistence, `applyConfigChanges` round-trip. |
+| `test:regime-invariants` | Regime-profile structural completeness + `classifyRegime()`'s return-domain contract. Checks the now-legacy `changes` maps for internal consistency (still useful as documentation, just not applied). |
+| `test:regime-overlay` | **The safety-critical suite for the overlay** — 38 checks: whitelist integrity (only 8 keys tunable, `maxPositions`/`maxDeployAmount` NOT tunable), `normal` is an exact no-op, the risk ratchet (no regime may ever increase `deployAmountSol`/`positionSizePct` or loosen `stopLossPct` beyond baseline), directional semantics (hot tightens screening + sizes down, slow loosens screening), clamps hold against absurd baselines, purity (no mutation, fails safe on unknown/null regime). |
+| `test:regime-state` | The relax + loopback-suppression state machine: fail counter increment/reset, suppression window set/expire/clear, relax zeroing the counter so it can't immediately re-fire. |
 
 `test/test-invariants.js` is the executable version of README.md's
-"Position lifecycle" and "Market regime state machine" diagrams. It locks in:
+"Position lifecycle" diagram. It locks in:
 - Config sign/bound invariants (`stopLossPct < 0`, `takeProfitPct > 0`,
-  `minBinsBelow >= MIN_SAFE_BINS_BELOW`, `regime.slowCutoff < regime.hotCutoff`, …).
+  `minBinsBelow >= MIN_SAFE_BINS_BELOW`, …).
 - **`CONFIG_MAP` <-> `config.js` bidirectional consistency** — every
   `CONFIG_MAP` entry must resolve to a real `config[section][field]` path.
   A typo'd or renamed config field fails this immediately instead of silently
   no-op'ing the next time an agent calls `update_config`.
-- Market-regime profile completeness — all 3 regimes define the exact same
-  key set, every key exists in `CONFIG_MAP`, `curve` is never used, and
-  slow/normal/hot are ordered sensibly (stopLoss/takeProfit/size all monotonic).
 - `degenScore()`/`classifyRegime()` bounds — fuzzed edge-case pools always
   score a finite `[0,100]`; `classifyRegime()` always returns one of
   `null`/`"slow"`/`"normal"`/`"hot"`.
@@ -510,6 +569,9 @@ positions, not live re-screening.
 - **`.claude/settings.json`** denies `rm -rf`, `wget`, and **reads of `.env*`**. It also blocks `run_in_background: true` via a PreToolUse hook. So in this repo, Claude Code can't background long-running commands — serial execution only.
 - **Drift risk** — `user-config.json` keys must match the **flat** `update_config` CONFIG_MAP in executor.js. New keys: add to both, otherwise `update_config` returns `unknown: [...]` and skips the apply.
 - **The Discord `useDiscordSignals` flag** lives in `screening`, not `discord`. Screener checks `config.screening.useDiscordSignals`, and `discordSignalMode: "merge" | "only"`.
+- **Fixed this session, worth remembering the shape of**: the regime switcher's `prevRegime = getActiveRegime()?.active` bug (should be `.id`) meant the "has the regime changed" check permanently compared against `"normal"`, so every non-normal detection re-applied config every cycle. Its symptom was dozens of near-identical `[SELF-TUNED] Changed strategy=...` lessons piling up with timestamps minutes apart — if you see that pattern again, check every place a regime/profile object's identity is read, not just this one call site.
+- **Fixed this session**: `test/test-regime.js`'s `applyConfigChanges` test called the real function, which writes a lesson as an intrinsic side effect — the test only snapshotted/restored `user-config.json` and `market-regime-profiles.json`, not `lessons.json`, so every test run leaked a synthetic `"test: regime apply"` lesson into the real lesson history. Fixed by wrapping that test block in `withRestoredFile(LESSONS_FILE, ...)` too. **General lesson**: when writing a test around any function, grep its body for every file it writes, not just the ones the test is nominally about — a persistence side effect one function call deep is easy to miss.
+- **`lessons.json` can drift between this machine and the VPS** — see "Supabase & VPS sync" above. A local cleanup doesn't reach the VPS's own copy; `pull:vps` will reintroduce whatever's accumulated there.
 
 ---
 
@@ -534,3 +596,6 @@ When scheduling work, follow the **`_busy` flag + cooldown** pattern. `_manageme
 - Changing deploy/close behavior → `tools/dlmm.js` (the SDK wrapper) and `tools/executor.js` (the post-tool side effects + Telegram notify + auto-swap).
 - Discord listener issues → `discord-listener/pre-checks.js`.
 - HiveMind protocol issues → `hivemind.js` (push side) and `lessons.js#getLessonsForPrompt` (pull side injection).
+- Changing what a regime can do to config → `regime-overlay.js`'s `REGIME_TUNABLE` (add the key + `test:regime-overlay`'s whitelist check will catch a missing `CONFIG_MAP` entry).
+- Changing the relax/loopback behavior → `market-regime-library.js` (`noteRegimeRelax`/`isRegimeSuppressed`) and `index.js`'s `noteScreeningResult`.
+- Supabase/VPS sync issues → `supabase-config.js`, `scripts/push-config.js`, `scripts/pull-vps-state.sh` + `scripts/reconcile-user-config.js`.

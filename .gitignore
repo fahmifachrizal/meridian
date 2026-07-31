@@ -5,10 +5,16 @@ node_modules/
 .env
 .env.*
 !.env.example
+!scripts/.env.vps.example
 .envrypt
 
 # User config (contains RPC URL, wallet key, API keys)
 user-config.json
+user-config.old.json
+
+# Ad-hoc backup snapshots (e.g. lessons.json.bak-pre-cleanup-<timestamp>)
+*.bak
+*.bak-*
 
 # GMGN fee-source config (contains API key)
 gmgn-config.json
