@@ -715,7 +715,7 @@ There is currently no empty-string disable path for HiveMind; blank values fall 
 
 ## Supabase (optional remote config store)
 
-`supabase-config.js` can sync `user-config.json` to/from a Supabase
+`integrations/supabase-config.js` can sync `user-config.json` to/from a Supabase
 key-value table. **The agent only ever pulls** — on startup and every 15
 minutes (`startSupabaseConfigBackgroundSync`). Nothing the agent decides at
 runtime (including regime overlay changes — see above) is ever pushed
@@ -952,20 +952,48 @@ sequenceDiagram
 
 ```
 index.js            Main entry: REPL + cron orchestration + Telegram bot polling
-agent.js            ReAct loop: LLM → tool call → repeat
-config.js           Runtime config from user-config.json + .env (repo-root paths)
-repo-root.js        Stable absolute repo path — used by PM2, state files, and .env loading
-prompt.js           System prompt builder (SCREENER / MANAGER / GENERAL roles)
-state.js            Position registry (state.json)
-decision-log.js     Structured decision log for deploy, close, skip, and no-deploy rationale
-lessons.js          Learning engine: records performance, derives lessons, evolves thresholds
-pool-memory.js      Per-pool deploy history + snapshots
-strategy-library.js Saved LP strategies
-telegram.js         Telegram bot: polling + notifications
-hivemind.js         Agent Meridian HiveMind sync
-smart-wallets.js    KOL/alpha wallet tracker
-token-blacklist.js  Permanent token blacklist
-cli.js              Direct CLI — every tool as a subcommand with JSON output
+cli.js               Direct CLI — every tool as a subcommand with JSON output
+setup.js             Interactive first-run wizard
+repo-root.js         Stable absolute repo path — used by PM2, state files, and .env loading
+logger.js            Shared logger — near-universal dependency, stays at root
+
+core/
+  agent.js            ReAct loop: LLM → tool call → repeat
+  config.js           Runtime config from user-config.json + .env (repo-root paths)
+  prompt.js           System prompt builder (SCREENER / MANAGER / GENERAL roles)
+  screening-scales.js Timeframe-scaled screening defaults
+
+state/
+  state.js            Position registry (state.json)
+  decision-log.js     Structured decision log for deploy, close, skip, and no-deploy rationale
+  lessons.js          Learning engine: records performance, derives lessons, evolves thresholds
+  pool-memory.js      Per-pool deploy history + snapshots
+  strategy-library.js Saved LP strategies
+  smart-wallets.js    KOL/alpha wallet tracker
+  token-blacklist.js  Permanent token blacklist
+  dev-blocklist.js    Deployer wallet blocklist
+  signal-tracker.js   In-memory screening-signal staging
+  signal-weights.js   Darwinian signal weighting
+  position-log.js     Deploy/close events → Supabase
+
+regime/
+  market-regime.js         classifyRegime() decision tree
+  market-regime-library.js Active regime pointer, relax/suppression state
+  regime-overlay.js        Bounded, ratcheted config overlay — the only code path that changes config for a regime
+
+integrations/
+  telegram.js         Telegram bot: polling + notifications
+  hivemind.js         Agent Meridian HiveMind sync
+  supabase-config.js  Pull-only Supabase config sync
+  briefing.js         Daily HTML report
+
+guards/
+  01-token-age-window.js       through
+  07-avoid-pin.js              — the 7 post-mortem safety guards, one file
+                                 per guard, numbered by execution order
+
+util/
+  envcrypt.js         .env encryption
 
 tools/
   definitions.js    Tool schemas (OpenAI format)
@@ -977,7 +1005,8 @@ tools/
   study.js          Top LPer study via LPAgent API
 
 discord-listener/
-  index.js          Selfbot Discord listener
+  index.js          Selfbot Discord listener (independent of the folder
+                     reorg above — computes its own repo-root path)
   pre-checks.js     Signal pre-check pipeline
 
 .claude/
