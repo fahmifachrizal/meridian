@@ -11,18 +11,18 @@
  *
  * Known coverage gaps, by design (see test/fixtures/README.md):
  *  - `timeline` snapshots don't include active_bin/upper_bin or
- *    fee_per_tvl_24h, so rules 3 (pumped-above-range), 4 (OOR-wait), and 5
+ *    fee_per_tvl_24h, so rules 3 (pumped-above-range), 5 (OOR-wait), and 6
  *    (low-yield) can never fire in this replay — only rules 1 (stop-loss),
- *    2 (take-profit), and 6 (fast-exit) are replayable from recorded data.
+ *    2 (take-profit), and 4 (fast-exit) are replayable from recorded data.
  *    This is reported explicitly per-position, not hidden.
- *  - Guards #1 and #6 each have exactly one known false positive in this
- *    8-position sample: guard #1 (repeat-deploy cooldown) would have
- *    blocked Waddles-SOL's 3rd deploy (a real win); guard #6 (token-age
- *    window) would have blocked brain-SOL's 2nd deploy (also a real win,
- *    inside the 6-30h cooldown zone). Both are accepted trade-offs — cut
- *    the big losses, occasionally skip a legitimate repeat win — asserted
- *    as *expected* per-pool outcomes so they don't spuriously fail the
- *    gate, while any NEW unseen false positive still would.
+ *  - Guards #1 and #2 each have exactly one known false positive in this
+ *    8-position sample: guard #1 (token-age window) would have blocked
+ *    brain-SOL's 2nd deploy (a real win, inside the 6-30h cooldown zone);
+ *    guard #2 (repeat-deploy cooldown) would have blocked Waddles-SOL's 3rd
+ *    deploy (also a real win). Both are accepted trade-offs — cut the big
+ *    losses, occasionally skip a legitimate repeat win — asserted as
+ *    *expected* per-pool outcomes so they don't spuriously fail the gate,
+ *    while any NEW unseen false positive still would.
  *
  * Run: node test/test-benchmark.js
  */
@@ -30,7 +30,7 @@
 import { repoPath } from "../repo-root.js";
 import { createSuite } from "./lib/test-kit.js";
 import { config } from "../config.js";
-import { getTokenAgeWindowRejectReason } from "../tools/screening.js";
+import { getTokenAgeWindowRejectReason } from "../guards/01-token-age-window.js";
 import { getDeterministicCloseRule } from "../index.js";
 import fs from "fs";
 
@@ -48,7 +48,16 @@ function isFeeGenerating(deploy, minFeeEarnedPct) {
   return Number(deploy.fee_earned_pct ?? 0) >= minFeeEarnedPct;
 }
 
-function wouldGuard1Block(pos, poolMemory) {
+function wouldGuard1Block(pos) {
+  if (pos.pool_age_hours_at_deploy == null) return null;
+  const reason = getTokenAgeWindowRejectReason(
+    Date.now() - pos.pool_age_hours_at_deploy * 3_600_000,
+    config.screening,
+  );
+  return reason !== null;
+}
+
+function wouldGuard2Block(pos, poolMemory) {
   const triggerCount = config.management.repeatDeployCooldownTriggerCount;
   if (!config.management.repeatDeployCooldownEnabled) return false;
   if (pos.deploy_sequence == null || pos.deploy_sequence <= triggerCount) return false;
@@ -60,17 +69,8 @@ function wouldGuard1Block(pos, poolMemory) {
   return priorDeploys.every((d) => isFeeGenerating(d, minFeeEarnedPct));
 }
 
-function wouldGuard6Block(pos) {
-  if (pos.pool_age_hours_at_deploy == null) return null;
-  const reason = getTokenAgeWindowRejectReason(
-    Date.now() - pos.pool_age_hours_at_deploy * 3_600_000,
-    config.screening,
-  );
-  return reason !== null;
-}
-
 // Replays the recorded per-tick timeline through today's getDeterministicCloseRule.
-// Only rules 1/2/6 can ever fire here — see file header for why.
+// Only rules 1/2/4 can ever fire here — see file header for why.
 function replayTimeline(pos) {
   const mgmt = config.management;
   for (const tick of pos.timeline ?? []) {
@@ -95,36 +95,36 @@ for (const pos of fixture.positions) {
   if (pos.error) continue;
   section(`${pos.pool_name} (${pos.tag}) — actual: ${pos.outcome.close_reason} @ ${pos.outcome.pnl_pct}%`);
 
-  const g1 = wouldGuard1Block(pos, poolMemory);
-  const g6 = wouldGuard6Block(pos);
+  const g1 = wouldGuard1Block(pos);
+  const g2 = wouldGuard2Block(pos, poolMemory);
   const replay = replayTimeline(pos);
 
-  console.log(`  guard #1 (repeat-deploy cooldown, seq=${pos.deploy_sequence}): ${g1 === null ? "insufficient data" : g1 ? "WOULD BLOCK" : "allows"}`);
-  console.log(`  guard #6 (token-age window, pool age ${pos.pool_age_hours_at_deploy?.toFixed(2)}h): ${g6 === null ? "insufficient data" : g6 ? "WOULD BLOCK" : "allows"}`);
+  console.log(`  guard #1 (token-age window, pool age ${pos.pool_age_hours_at_deploy?.toFixed(2)}h): ${g1 === null ? "insufficient data" : g1 ? "WOULD BLOCK" : "allows"}`);
+  console.log(`  guard #2 (repeat-deploy cooldown, seq=${pos.deploy_sequence}): ${g2 === null ? "insufficient data" : g2 ? "WOULD BLOCK" : "allows"}`);
   console.log(`  timeline replay (rules 1/2/4 only): ${replay ? `rule ${replay.rule} "${replay.reason}" at age ${replay.tick.age_minutes}m` : "no rule fires (needs rule 3/5/6 data not captured historically)"}`);
 
   if (pos.tag === "big_loss") {
-    const caught = g1 === true || g6 === true || replay !== null;
-    check(`current system catches or mitigates this loss (guard1=${g1}, guard6=${g6}, replay=${!!replay})`, caught);
+    const caught = g1 === true || g2 === true || replay !== null;
+    check(`current system catches or mitigates this loss (guard1=${g1}, guard2=${g2}, replay=${!!replay})`, caught);
   }
 
   if (pos.tag.startsWith("win_")) {
     // Both guards have exactly one known, accepted false positive in this
-    // 8-position sample (guard #1: Waddles-SOL, a 3rd-deploy repeat that
-    // happened to still work out; guard #6: brain-SOL, a legitimate
-    // early-repeat win inside the age-cooldown zone). Asserting the
-    // *expected* per-pool outcome — not a blanket "never blocks a win" —
-    // means a NEW, previously-unseen false positive still fails loudly,
-    // while these two documented trade-offs don't spuriously break the gate.
-    const expectedG1Block = pos.pool_name === "Waddles-SOL";
-    const expectedG6Block = pos.pool_name === "brain-SOL";
+    // 8-position sample (guard #1: brain-SOL, a legitimate early-repeat win
+    // inside the age-cooldown zone; guard #2: Waddles-SOL, a 3rd-deploy
+    // repeat that happened to still work out). Asserting the *expected*
+    // per-pool outcome — not a blanket "never blocks a win" — means a NEW,
+    // previously-unseen false positive still fails loudly, while these two
+    // documented trade-offs don't spuriously break the gate.
+    const expectedG1Block = pos.pool_name === "brain-SOL";
+    const expectedG2Block = pos.pool_name === "Waddles-SOL";
     check(
       `guard #1 result matches expectation (${expectedG1Block ? "known accepted false positive" : "should not block"})`,
       g1 === expectedG1Block,
     );
     check(
-      `guard #6 result matches expectation (${expectedG6Block ? "known accepted false positive" : "should not block"})`,
-      g6 === expectedG6Block,
+      `guard #2 result matches expectation (${expectedG2Block ? "known accepted false positive" : "should not block"})`,
+      g2 === expectedG2Block,
     );
   }
 }

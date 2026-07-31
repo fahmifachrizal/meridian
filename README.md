@@ -870,7 +870,7 @@ stateDiagram-v2
     Deploying --> Rejected: guard blocks\n(repeat-deploy cooldown, TVL decline,\ntoken-age window, hysteresis)
     Rejected --> [*]
 
-    Deploying --> Open: runSafetyChecks passes\n(guard #7 may taper size + tighten stop-loss)
+    Deploying --> Open: runSafetyChecks passes\n(guard #5 may taper size + tighten stop-loss)
 
     state Open {
         [*] --> InRange
@@ -884,7 +884,7 @@ stateDiagram-v2
     InRange --> Closed_LowYield: fee_per_tvl_24h < minFeePerTvl24h\nAND age >= minAgeBeforeYieldCheck
     InRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
     OutOfRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
-    OutOfRange --> Closed_FastExit: pnl_pct <= stopLossPct * fastExitFraction\n(guard #4 — fires before the full OOR wait)
+    OutOfRange --> Closed_FastExit: pnl_pct <= stopLossPct * fastExitFraction\n(guard #6 — fires before the full OOR wait)
     OutOfRange --> Closed_PumpedAbove: active_bin > upper_bin + outOfRangeBinsToClose
     OutOfRange --> Closed_OORWait: minutes_out_of_range >= outOfRangeWaitMinutes
     Open --> Closed_Manual: /close command, or LLM decision\n(position instruction condition met)

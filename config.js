@@ -98,11 +98,11 @@ export const config = {
     blockedLaunchpads:  u.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
-    // Rejection hysteresis (guard #2) — repeated borderline rejections tighten the bar
+    // Rejection hysteresis (guard #3) — repeated borderline rejections tighten the bar
     hysteresisRejectionCount: u.hysteresisRejectionCount ?? 2,
     hysteresisWindowHours:    u.hysteresisWindowHours    ?? 24,
     hysteresisMarginPct:      u.hysteresisMarginPct      ?? 5,
-    // Token-age deploy window (guard #6) — early momentum, then cooldown, then reopen
+    // Token-age deploy window (guard #1) — early momentum, then cooldown, then reopen
     tokenAgeWindowEnabled:    u.tokenAgeWindowEnabled    ?? true,
     tokenEarlyWindowMaxHours: u.tokenEarlyWindowMaxHours ?? 6,
     tokenCooldownHours:       u.tokenCooldownHours       ?? 24,
@@ -128,16 +128,16 @@ export const config = {
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
-    // Pre-deploy TVL/mcap decline check (guard #3)
+    // Pre-deploy TVL/mcap decline check (guard #4)
     maxTvlSnapshotAgeHours:    u.maxTvlSnapshotAgeHours    ?? 4,
     maxTvlDeclinePctForDeploy: u.maxTvlDeclinePctForDeploy ?? 20,
-    // Fast OOR + negative-PnL exit (guard #4)
+    // Fast OOR + negative-PnL exit (guard #6)
     fastExitOnOorEnabled:    u.fastExitOnOorEnabled    ?? true,
     fastExitStopLossFraction: u.fastExitStopLossFraction ?? 0.5,
-    // AVOID-tagged pinned lessons (guard #5)
+    // AVOID-tagged pinned lessons (guard #7)
     avoidPinThresholdPct: u.avoidPinThresholdPct ?? -10,
     avoidPinMinDeploys:   u.avoidPinMinDeploys   ?? 2,
-    // Repeat-deploy size taper + tightened stop-loss (guard #7) — a 2nd+ deploy
+    // Repeat-deploy size taper + tightened stop-loss (guard #5) — a 2nd+ deploy
     // into the same pool while it's still within the early-momentum window
     // (screening.tokenEarlyWindowMaxHours) is strictly higher variance than the
     // 1st, so it risks less capital and gets cut faster if wrong.

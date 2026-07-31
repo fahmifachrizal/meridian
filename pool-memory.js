@@ -223,7 +223,7 @@ export function recordPoolDeploy(poolAddress, deployData) {
   log("pool-memory", `Recorded deploy for ${entry.name} (${poolAddress.slice(0, 8)}): PnL ${deploy.pnl_pct}%`);
 }
 
-// ─── Rejection hysteresis (guard #2) ────────────────────────────
+// ─── Rejection hysteresis (guard #3) ────────────────────────────
 // A pool rejected on the same borderline reason repeatedly shouldn't
 // slip through the instant the metric dips just under the raw cutoff —
 // record each rejection so a hysteresis margin can be applied.
@@ -277,7 +277,7 @@ export function getRecentRejectionCount(poolAddress, reasonKey, windowHours) {
   return entry.rejections.filter((r) => r.reason === reasonKey && new Date(r.ts).getTime() >= cutoff).length;
 }
 
-// ─── TVL/mcap decline tracking (guard #3) ───────────────────────
+// ─── TVL/mcap decline tracking (guard #4) ───────────────────────
 // Screening recon observes a pool's TVL well before a deploy decision is
 // made. Recording those observations lets a pre-deploy check catch a pool
 // whose liquidity is actively collapsing between recon and the deploy call.

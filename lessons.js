@@ -10,6 +10,7 @@ import fs from "fs";
 import { log } from "./logger.js";
 import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "./hivemind.js";
 import { repoPath } from "./repo-root.js";
+import { shouldPinAvoid } from "./guards/07-avoid-pin.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 
@@ -183,15 +184,14 @@ export async function recordPerformance(perf) {
       exit_volume: perf.exit_volume,
     });
 
-    // Guard #5: pin an AVOID lesson for pools with a proven bad track
-    // record so they outrank the normal recency cap in future SCREENER
-    // prompts instead of aging out like any other lesson.
+    // Guard #7 (see guards/07-avoid-pin.js): pin an AVOID lesson for pools
+    // with a proven bad track record so they outrank the normal recency cap
+    // in future SCREENER prompts instead of aging out like any other lesson.
     const { getPoolMemory } = await import("./pool-memory.js");
     const { config: liveConfig } = await import("./config.js");
     const memory = getPoolMemory({ pool_address: perf.pool });
-    const avoidThreshold = liveConfig.management.avoidPinThresholdPct ?? -10;
-    const minDeploys = liveConfig.management.avoidPinMinDeploys ?? 2;
-    if (memory?.known && memory.total_deploys >= minDeploys && memory.avg_pnl_pct <= avoidThreshold) {
+    const pinDecision = shouldPinAvoid(memory, liveConfig.management);
+    if (pinDecision) {
       const avoidTag = `avoid_pool:${perf.pool}`;
       const avoidRule = `AVOID: ${perf.pool_name || perf.pool} — ${memory.total_deploys} deploys, avg PnL ${memory.avg_pnl_pct}%, win rate ${memory.win_rate}%. Proven underperformer, do not redeploy.`;
       const dataAfterMemory = load();

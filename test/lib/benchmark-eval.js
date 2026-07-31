@@ -3,11 +3,11 @@
  * test/fixtures/benchmark-positions.json's real historical positions and
  * reports what would have happened in pnl_sol / pnl_usd / pnl_pct.
  *
- * Scope: replays guard #1 (repeat-deploy cooldown), guard #6 (token-age
- * window), and guard #7 (repeat-deploy size taper + tightened stop-loss)
+ * Scope: replays guard #1 (token-age window), guard #2 (repeat-deploy
+ * cooldown), and guard #5 (repeat-deploy size taper + tightened stop-loss)
  * for the deploy-gate decision, and rules 1/2/4 of
  * getDeterministicCloseRule for the exit (via each position's recorded
- * `timeline`). Guards #2/#3/#5 are NOT replayed — they need
+ * `timeline`). Guards #3/#4/#7 are NOT replayed — they need
  * rejection/TVL-snapshot/pool-average history this fixture doesn't carry
  * meaningfully, and rules 3/5/6 can't fire from `timeline` (it lacks
  * active_bin/upper_bin/fee_per_tvl_24h) — a timeline that never trips
@@ -15,7 +15,7 @@
  * test/test-benchmark-eval.js and test/fixtures/README.md.
  */
 
-import { getTokenAgeWindowRejectReason } from "../../tools/screening.js";
+import { getTokenAgeWindowRejectReason } from "../../guards/01-token-age-window.js";
 import { getDeterministicCloseRule } from "../../index.js";
 
 // Mirrors pool-memory.js's isFeeGeneratingDeploy — reimplemented here so
@@ -31,14 +31,14 @@ function isFeeGenerating(deploy, minFeeEarnedPct) {
 
 /**
  * Would this position's deploy have been allowed under `cfg`, and at what
- * size / stop-loss? Replays guards #1, #6, #7.
+ * size / stop-loss? Replays guards #1, #2, #5.
  *
  * @returns {{ deploy: boolean, blockedBy: string[], sizeSol: number, stopLossOverride: number|null }}
  */
 export function wouldDeployUnderConfig(cfg, position, poolMemory) {
   const blockedBy = [];
 
-  // Guard #1 — repeat-deploy cooldown
+  // Guard #2 — repeat-deploy cooldown
   if (cfg.management.repeatDeployCooldownEnabled && position.deploy_sequence != null) {
     const triggerCount = cfg.management.repeatDeployCooldownTriggerCount;
     if (position.deploy_sequence > triggerCount) {
@@ -51,7 +51,7 @@ export function wouldDeployUnderConfig(cfg, position, poolMemory) {
     }
   }
 
-  // Guard #6 — token-age window
+  // Guard #1 — token-age window
   if (position.pool_age_hours_at_deploy != null) {
     const fakeCreatedAt = Date.now() - position.pool_age_hours_at_deploy * 3_600_000;
     if (getTokenAgeWindowRejectReason(fakeCreatedAt, cfg.screening) !== null) {
@@ -63,7 +63,7 @@ export function wouldDeployUnderConfig(cfg, position, poolMemory) {
     return { deploy: false, blockedBy, sizeSol: 0, stopLossOverride: null };
   }
 
-  // Guard #7 — size taper + tightened stop-loss (only reached if not blocked)
+  // Guard #5 — size taper + tightened stop-loss (only reached if not blocked)
   let sizeSol = position.amount_sol;
   let stopLossOverride = null;
   if (cfg.management.repeatDeploySizeTaperEnabled && position.pool_age_hours_at_deploy != null) {

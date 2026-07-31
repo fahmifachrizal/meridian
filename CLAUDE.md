@@ -526,31 +526,31 @@ Regenerate with `node scripts/build-benchmark-dataset.js` then
 `node scripts/fetch-benchmark-ohlcv.js` and
 `node scripts/fetch-benchmark-pool-metadata.js` (the last adds
 `pool_created_at`/`pool_age_hours_at_deploy`/`deploy_sequence`, needed by
-guards #1 and #6's replay). See `test/fixtures/README.md` for full details.
+guards #1 and #2's replay). See `test/fixtures/README.md` for full details.
 
 **`test/test-benchmark.js`** (part of `npm test`) replays all 8 positions
 against the *current* guards and `getDeterministicCloseRule` — offline,
 reads only the static fixture. Asserts every `big_loss` position is caught
-or mitigated by at least one of {guard #1, guard #6, a rule-1/2/6 replay of
-its recorded `timeline`}, and that guards #1/#6 only ever block the two
-already-known, accepted false positives in this sample (Waddles-SOL for
-guard #1, brain-SOL for guard #6 — both real wins that a repeat-deploy/
-token-age guard would still have flagged; a NEW unseen false positive still
-fails the gate). This is how a future guard/threshold change gets checked
-against real outcomes instead of just synthetic fixtures.
+or mitigated by at least one of {guard #1, guard #2, a rule-1/2/4 replay of
+its recorded `timeline`}, and that guards #1/#2 only ever block the two
+already-known, accepted false positives in this sample (brain-SOL for
+guard #1, Waddles-SOL for guard #2 — both real wins that a token-age/
+repeat-deploy guard would still have flagged; a NEW unseen false positive
+still fails the gate). This is how a future guard/threshold change gets
+checked against real outcomes instead of just synthetic fixtures.
 
 **`test/lib/benchmark-eval.js`** (built TDD — spec in
 `test/test-benchmark-eval.js` was written first with hand-computed expected
 numbers, confirmed to fail before the module existed) is a config
 backtester: `evaluateConfig(cfg, positions, poolMemory)` replays guards
-#1/#6/#7 for the deploy gate and rules 1/2/6 for the exit, then converts the
+#1/#2/#5 for the deploy gate and rules 1/2/4 for the exit, then converts the
 result into `pnl_sol`/`pnl_usd` per position and in aggregate, compared
 against what actually happened historically. Run
 `npm run evaluate-config` (live config) or
 `node scripts/evaluate-config.js path/to/candidate.json` (a
 `{screening:{...}, management:{...}}` partial override merged onto the live
 config) for a report. Same scope ceiling as `test-benchmark.js` — guards
-#2/#3/#5 aren't replayed, rules 3/4/5 aren't replayable from `timeline`, and
+#3/#4/#7 aren't replayed, rules 3/5/6 aren't replayable from `timeline`, and
 a candidate config change is scored only against the same 8 fixture
 positions, not live re-screening.
 

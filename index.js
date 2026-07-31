@@ -34,7 +34,9 @@ import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRel
 import { classifyRegime } from "./market-regime.js";
 import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime-overlay.js";
 import { CONFIG_MAP } from "./tools/executor.js";
-import { recordPositionSnapshot, recallForPool, addPoolNote, recordRejection, getRecentRejectionCount } from "./pool-memory.js";
+import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
+import { checkRejectionHysteresis } from "./guards/03-rejection-hysteresis.js";
+import { checkFastExit } from "./guards/06-fast-exit.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { stageSignals } from "./signal-tracker.js";
@@ -548,37 +550,12 @@ export async function runScreeningCycle({ silent = false } = {}) {
         filteredOut.push({ name: pool.name, reason: `blocked launchpad (${launchpad})` });
         return false;
       }
-      const botPct = ti?.audit?.bot_holders_pct;
-      const top10Pct = ti?.audit?.top_holders_pct;
-      const maxBotHoldersPct = config.screening.maxBotHoldersPct;
-      const maxTop10Pct = config.screening.maxTop10Pct;
-      const hysteresisCount = config.screening.hysteresisRejectionCount ?? 2;
-      const hysteresisWindow = config.screening.hysteresisWindowHours ?? 24;
-      const hysteresisMargin = config.screening.hysteresisMarginPct ?? 5;
-
-      if (botPct != null && maxBotHoldersPct != null) {
-        // Guard #2: a pool rejected repeatedly on bot-holders shouldn't slip
-        // through the instant it dips just under the raw cutoff.
-        const priorRejections = getRecentRejectionCount(pool.pool, "bot_holders_pct", hysteresisWindow);
-        const effectiveCap = priorRejections >= hysteresisCount ? maxBotHoldersPct - hysteresisMargin : maxBotHoldersPct;
-        if (botPct > effectiveCap) {
-          const marginNote = priorRejections >= hysteresisCount ? ` (hysteresis: ${priorRejections} recent rejections, cap tightened by ${hysteresisMargin}%)` : "";
-          log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${effectiveCap}%${marginNote}`);
-          filteredOut.push({ name: pool.name, reason: `bot holders ${botPct}% > ${effectiveCap}%${marginNote}` });
-          recordRejection(pool.pool, "bot_holders_pct", botPct);
-          return false;
-        }
-      }
-      if (top10Pct != null && maxTop10Pct != null) {
-        const priorRejections = getRecentRejectionCount(pool.pool, "top10pct", hysteresisWindow);
-        const effectiveCap = priorRejections >= hysteresisCount ? maxTop10Pct - hysteresisMargin : maxTop10Pct;
-        if (top10Pct > effectiveCap) {
-          const marginNote = priorRejections >= hysteresisCount ? ` (hysteresis: ${priorRejections} recent rejections, cap tightened by ${hysteresisMargin}%)` : "";
-          log("screening", `Top10 filter: dropped ${pool.name} — top10 ${top10Pct}% > ${effectiveCap}%${marginNote}`);
-          filteredOut.push({ name: pool.name, reason: `top10 concentration ${top10Pct}% > ${effectiveCap}%${marginNote}` });
-          recordRejection(pool.pool, "top10pct", top10Pct);
-          return false;
-        }
+      // Guard #3: a pool rejected repeatedly on bot-holders%/top10% shouldn't
+      // slip through the instant it dips just under the raw cutoff.
+      const hysteresisResult = checkRejectionHysteresis(pool, ti, config.screening);
+      if (hysteresisResult.blocked) {
+        filteredOut.push({ name: pool.name, reason: hysteresisResult.reason });
+        return false;
       }
       return true;
     });
@@ -1059,20 +1036,9 @@ export function getDeterministicCloseRule(position, managementConfig) {
   ) {
     return { action: "CLOSE", rule: 3, reason: "pumped far above range" };
   }
-  // Guard #6 (fast OOR + negative-PnL exit): don't wait out the full OOR
-  // timer if the position is already bleeding meaningfully — SalaryCat-SOL
-  // went OOR at 20:09 and didn't close until 20:19 at -35.96% because the
-  // full stop-loss/OOR-wait rules are independent lagging brakes. Close
-  // immediately once both conditions hold.
-  if (
-    managementConfig.fastExitOnOorEnabled &&
-    !pnlSuspect &&
-    position.pnl_pct != null &&
-    position.in_range === false &&
-    position.pnl_pct <= effectiveStopLossPct * (managementConfig.fastExitStopLossFraction ?? 0.5)
-  ) {
-    return { action: "CLOSE", rule: 4, reason: `Fast exit: OOR + PnL ${position.pnl_pct}% past ${managementConfig.fastExitStopLossFraction ?? 0.5} of stop-loss` };
-  }
+  // Guard #6 (fast OOR + negative-PnL exit): see guards/06-fast-exit.js.
+  const fastExitResult = checkFastExit(position, effectiveStopLossPct, pnlSuspect, managementConfig);
+  if (fastExitResult) return fastExitResult;
   if (
     position.active_bin != null &&
     position.upper_bin != null &&
