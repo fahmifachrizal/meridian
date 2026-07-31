@@ -18,10 +18,10 @@
  */
 
 import { createSuite } from "./lib/test-kit.js";
-import { config } from "../config.js";
+import { config } from "../core/config.js";
 import { CONFIG_MAP } from "../tools/executor.js";
-import { classifyRegime } from "../market-regime.js";
-import { listRegimeProfiles, getRegimeProfile } from "../market-regime-library.js";
+import { classifyRegime } from "../regime/market-regime.js";
+import { listRegimeProfiles, getRegimeProfile } from "../regime/market-regime-library.js";
 
 const suite = createSuite("QA protocol — regime-specific invariants");
 const { section, check } = suite;

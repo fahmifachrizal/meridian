@@ -1,4 +1,4 @@
-import { getPoolMemory } from "../pool-memory.js";
+import { getPoolMemory } from "../state/pool-memory.js";
 import { log } from "../logger.js";
 
 /**

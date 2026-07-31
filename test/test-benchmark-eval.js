@@ -26,7 +26,7 @@
 import fs from "fs";
 import { repoPath } from "../repo-root.js";
 import { createSuite } from "./lib/test-kit.js";
-import { config as liveConfig } from "../config.js";
+import { config as liveConfig } from "../core/config.js";
 import {
   wouldDeployUnderConfig,
   simulateExitUnderConfig,

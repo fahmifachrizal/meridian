@@ -1,7 +1,7 @@
 import fs from "fs";
-import { log } from "./logger.js";
-import { getPerformanceSummary } from "./lessons.js";
-import { repoPath } from "./repo-root.js";
+import { log } from "../logger.js";
+import { getPerformanceSummary } from "../state/lessons.js";
+import { repoPath } from "../repo-root.js";
 
 const STATE_FILE = repoPath("state.json");
 const LESSONS_FILE = repoPath("lessons.json");

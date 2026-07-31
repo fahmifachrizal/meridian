@@ -13,7 +13,7 @@ import {
   getRecentRejectionCount,
   recordTvlObservation,
   getPriorTvlObservation,
-} from "../pool-memory.js";
+} from "../state/pool-memory.js";
 
 const POOL_MEMORY_FILE = repoPath("pool-memory.json");
 const FAKE_POOL_HYSTERESIS = "TEST_GUARD_POOL_HYSTERESIS_DO_NOT_USE";

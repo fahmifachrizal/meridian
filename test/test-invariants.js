@@ -21,7 +21,7 @@
 import fs from "fs";
 import { repoPath } from "../repo-root.js";
 import { createSuite, withRestoredFile } from "./lib/test-kit.js";
-import { config, MIN_SAFE_BINS_BELOW } from "../config.js";
+import { config, MIN_SAFE_BINS_BELOW } from "../core/config.js";
 import { CONFIG_MAP } from "../tools/executor.js";
 import { degenScore } from "../tools/screening.js";
 import { getDeterministicCloseRule } from "../index.js";

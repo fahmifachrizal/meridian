@@ -1,7 +1,7 @@
 import fs from "fs";
-import { log } from "./logger.js";
-import { repoPath } from "./repo-root.js";
-import { reloadScreeningThresholds } from "./config.js";
+import { log } from "../logger.js";
+import { repoPath } from "../repo-root.js";
+import { reloadScreeningThresholds } from "../core/config.js";
 import { notifyConfigChange } from "./telegram.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");

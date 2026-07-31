@@ -23,7 +23,7 @@ import {
   RISK_KEYS,
   SCREENING_KEYS,
   computeRegimeOverlay,
-} from "../regime-overlay.js";
+} from "../regime/regime-overlay.js";
 
 const suite = createSuite("QA protocol — bounded regime overlay");
 const { section, check } = suite;

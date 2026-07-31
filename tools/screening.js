@@ -1,6 +1,6 @@
-import { config } from "../config.js";
-import { isBlacklisted } from "../token-blacklist.js";
-import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
+import { config } from "../core/config.js";
+import { isBlacklisted } from "../state/token-blacklist.js";
+import { isDevBlocked, getBlockedDevs } from "../state/dev-blocklist.js";
 import { log } from "../logger.js";
 import { confirmIndicatorPreset } from "./chart-indicators.js";
 import { getAgentMeridianBase, getAgentMeridianHeaders } from "./agent-meridian.js";
@@ -602,7 +602,7 @@ export async function discoverPools({
  * Hard filters applied in code, agent decides which to deploy into.
  */
 export async function getTopCandidates({ limit = 10 } = {}) {
-  const { config } = await import("../config.js");
+  const { config } = await import("../core/config.js");
   const discovery = await discoverPools({ page_size: 50 });
   const { pools } = discovery;
   const filteredOut = Array.isArray(discovery.filtered_examples) ? [...discovery.filtered_examples] : [];

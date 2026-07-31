@@ -1,6 +1,6 @@
 import fs from "fs";
-import { log } from "./logger.js";
-import { repoPath } from "./repo-root.js";
+import { log } from "../logger.js";
+import { repoPath } from "../repo-root.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 

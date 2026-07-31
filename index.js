@@ -1,15 +1,15 @@
-import "./envcrypt.js";
+import "./util/envcrypt.js";
 import cron from "node-cron";
 import readline from "readline";
 import path from "path";
 import { fileURLToPath } from "url";
-import { agentLoop } from "./agent.js";
+import { agentLoop } from "./core/agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates, degenScore } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
-import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
+import { config, reloadScreeningThresholds, computeDeployAmount } from "./core/config.js";
+import { evolveThresholds, getPerformanceSummary } from "./state/lessons.js";
 import { executeTool, registerCronRestarter, applyConfigChanges } from "./tools/executor.js";
 import {
   startPolling,
@@ -26,24 +26,24 @@ import {
   createLiveMessage,
   escapeHtml,
   htmlTable,
-} from "./telegram.js";
-import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state.js";
-import { getActiveStrategy } from "./strategy-library.js";
-import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRelax, isRegimeSuppressed } from "./market-regime-library.js";
-import { classifyRegime } from "./market-regime.js";
-import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime-overlay.js";
+} from "./integrations/telegram.js";
+import { generateBriefing } from "./integrations/briefing.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state/state.js";
+import { getActiveStrategy } from "./state/strategy-library.js";
+import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRelax, isRegimeSuppressed } from "./regime/market-regime-library.js";
+import { classifyRegime } from "./regime/market-regime.js";
+import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime/regime-overlay.js";
 import { CONFIG_MAP } from "./tools/executor.js";
-import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
+import { recordPositionSnapshot, recallForPool, addPoolNote } from "./state/pool-memory.js";
 import { checkRejectionHysteresis } from "./guards/03-rejection-hysteresis.js";
 import { checkFastExit } from "./guards/06-fast-exit.js";
-import { checkSmartWalletsOnPool } from "./smart-wallets.js";
+import { checkSmartWalletsOnPool } from "./state/smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
-import { stageSignals } from "./signal-tracker.js";
-import { getWeightsSummary } from "./signal-weights.js";
-import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
-import { appendDecision } from "./decision-log.js";
-import { pullSupabaseConfig, startSupabaseConfigBackgroundSync } from "./supabase-config.js";
+import { stageSignals } from "./state/signal-tracker.js";
+import { getWeightsSummary } from "./state/signal-weights.js";
+import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./integrations/hivemind.js";
+import { appendDecision } from "./state/decision-log.js";
+import { pullSupabaseConfig, startSupabaseConfigBackgroundSync } from "./integrations/supabase-config.js";
 
 import { REPO_ROOT, repoPath } from "./repo-root.js";
 

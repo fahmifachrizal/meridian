@@ -29,7 +29,7 @@
 
 import { repoPath } from "../repo-root.js";
 import { createSuite } from "./lib/test-kit.js";
-import { config } from "../config.js";
+import { config } from "../core/config.js";
 import { getTokenAgeWindowRejectReason } from "../guards/01-token-age-window.js";
 import { getDeterministicCloseRule } from "../index.js";
 import fs from "fs";

@@ -1,8 +1,8 @@
 import fs from "fs";
 import crypto from "crypto";
-import { log } from "./logger.js";
-import { config } from "./config.js";
-import { repoPath } from "./repo-root.js";
+import { log } from "../logger.js";
+import { config } from "../core/config.js";
+import { repoPath } from "../repo-root.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 const CACHE_PATH = repoPath("hivemind-cache.json");

@@ -10,13 +10,13 @@
  * Run: node scripts/push-config.js [--yes]
  */
 
-import { loadEnv } from "../envcrypt.js";
+import { loadEnv } from "../util/envcrypt.js";
 import { repoPath } from "../repo-root.js";
 import fs from "fs";
 
 loadEnv();
 
-const { isSupabaseConfigEnabled, pushSupabaseConfig } = await import("../supabase-config.js");
+const { isSupabaseConfigEnabled, pushSupabaseConfig } = await import("../integrations/supabase-config.js");
 
 if (!isSupabaseConfigEnabled()) {
   console.error("Supabase is not configured — set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_DB_SCHEMA, SUPABASE_DB_TABLENAME in .env");

@@ -23,7 +23,7 @@
  */
 
 import fs from "fs";
-import { loadEnv } from "../envcrypt.js";
+import { loadEnv } from "../util/envcrypt.js";
 import { repoPath } from "../repo-root.js";
 
 loadEnv();
@@ -44,7 +44,7 @@ function readJson(path, fallback = {}) {
   }
 }
 
-const { isSupabaseConfigEnabled, pullSupabaseConfig } = await import("../supabase-config.js");
+const { isSupabaseConfigEnabled, pullSupabaseConfig } = await import("../integrations/supabase-config.js");
 
 // ── Step 1: Supabase > local (highest priority) ──────────────────
 if (isSupabaseConfigEnabled()) {

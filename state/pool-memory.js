@@ -6,10 +6,10 @@
  */
 
 import fs from "fs";
-import { log } from "./logger.js";
-import { config } from "./config.js";
+import { log } from "../logger.js";
+import { config } from "../core/config.js";
 
-import { repoPath } from "./repo-root.js";
+import { repoPath } from "../repo-root.js";
 
 const POOL_MEMORY_FILE = repoPath("pool-memory.json");
 const MAX_NOTE_LENGTH = 280;

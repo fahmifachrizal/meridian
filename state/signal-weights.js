@@ -10,9 +10,9 @@
  */
 
 import fs from "fs";
-import { log } from "./logger.js";
+import { log } from "../logger.js";
 
-import { repoPath } from "./repo-root.js";
+import { repoPath } from "../repo-root.js";
 
 const WEIGHTS_FILE = repoPath("signal-weights.json");
 

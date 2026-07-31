@@ -11,24 +11,24 @@ import {
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
-import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction } from "../state.js";
+import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../state/lessons.js";
+import { setPositionInstruction } from "../state/state.js";
 
-import { getPoolMemory, addPoolNote } from "../pool-memory.js";
+import { getPoolMemory, addPoolNote } from "../state/pool-memory.js";
 import { checkTvlDecline, recordTvlSnapshot } from "../guards/04-tvl-decline.js";
 import { computeDeployTaper } from "../guards/05-repeat-deploy-taper.js";
-import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
-import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
-import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
-import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
+import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../state/strategy-library.js";
+import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../state/token-blacklist.js";
+import { blockDev, unblockDev, listBlockedDevs } from "../state/dev-blocklist.js";
+import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../state/smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
-import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../config.js";
-import { getRecentDecisions } from "../decision-log.js";
-import { recordDeploy, recordClose } from "../position-log.js";
+import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../core/config.js";
+import { getRecentDecisions } from "../state/decision-log.js";
+import { recordDeploy, recordClose } from "../state/position-log.js";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
 import { REPO_ROOT, repoPath } from "../repo-root.js";
-import { normalizeTimeframe, scaleScreeningToTimeframe } from "../screening-scales.js";
+import { normalizeTimeframe, scaleScreeningToTimeframe } from "../core/screening-scales.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
@@ -43,7 +43,7 @@ const TIMEFRAME_MINUTES = {
   "24h": 1440,
 };
 import { log, logAction } from "../logger.js";
-import { notifyDeploy, notifyClose, notifySwap, notifyConfigChange } from "../telegram.js";
+import { notifyDeploy, notifyClose, notifySwap, notifyConfigChange } from "../integrations/telegram.js";
 
 function numberOrNull(value) {
   const n = Number(value);

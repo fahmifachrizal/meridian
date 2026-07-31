@@ -1,5 +1,5 @@
 import fs from "fs";
-import { REPO_ROOT, repoPath } from "./repo-root.js";
+import { REPO_ROOT, repoPath } from "../repo-root.js";
 import { getScreeningDefaultsForTimeframe, normalizeTimeframe, scaleScreeningToTimeframe, TIMEFRAME_SCREENING_SCALES } from "./screening-scales.js";
 
 export { REPO_ROOT, repoPath, getScreeningDefaultsForTimeframe, normalizeTimeframe, scaleScreeningToTimeframe, TIMEFRAME_SCREENING_SCALES };

@@ -1,4 +1,4 @@
-import { getRecentRejectionCount, recordRejection } from "../pool-memory.js";
+import { getRecentRejectionCount, recordRejection } from "../state/pool-memory.js";
 import { log } from "../logger.js";
 
 /**

@@ -12,7 +12,7 @@
 
 import fs from "fs";
 import { repoPath } from "../repo-root.js";
-import { config as liveConfig } from "../config.js";
+import { config as liveConfig } from "../core/config.js";
 import { evaluateConfig } from "../test/lib/benchmark-eval.js";
 
 const candidatePath = process.argv[2];

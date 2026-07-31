@@ -7,10 +7,10 @@
  */
 
 import fs from "fs";
-import { log } from "./logger.js";
-import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "./hivemind.js";
-import { repoPath } from "./repo-root.js";
-import { shouldPinAvoid } from "./guards/07-avoid-pin.js";
+import { log } from "../logger.js";
+import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "../integrations/hivemind.js";
+import { repoPath } from "../repo-root.js";
+import { shouldPinAvoid } from "../guards/07-avoid-pin.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 
@@ -188,7 +188,7 @@ export async function recordPerformance(perf) {
     // with a proven bad track record so they outrank the normal recency cap
     // in future SCREENER prompts instead of aging out like any other lesson.
     const { getPoolMemory } = await import("./pool-memory.js");
-    const { config: liveConfig } = await import("./config.js");
+    const { config: liveConfig } = await import("../core/config.js");
     const memory = getPoolMemory({ pool_address: perf.pool });
     const pinDecision = shouldPinAvoid(memory, liveConfig.management);
     if (pinDecision) {
@@ -221,7 +221,7 @@ export async function recordPerformance(perf) {
 
   // Evolve thresholds every 5 closed positions
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
-    const { config, reloadScreeningThresholds } = await import("./config.js");
+    const { config, reloadScreeningThresholds } = await import("../core/config.js");
     const result = evolveThresholds(data.performance, config);
     if (result?.changes && Object.keys(result.changes).length > 0) {
       reloadScreeningThresholds();

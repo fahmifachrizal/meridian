@@ -9,10 +9,10 @@
 import fs from "fs";
 import { repoPath } from "../repo-root.js";
 import { createSuite, withRestoredFile } from "./lib/test-kit.js";
-import { classifyRegime } from "../market-regime.js";
-import { getActiveRegime, setActiveRegime, listRegimeProfiles, getRegimeProfile } from "../market-regime-library.js";
+import { classifyRegime } from "../regime/market-regime.js";
+import { getActiveRegime, setActiveRegime, listRegimeProfiles, getRegimeProfile } from "../regime/market-regime-library.js";
 import { applyConfigChanges } from "../tools/executor.js";
-import { config } from "../config.js";
+import { config } from "../core/config.js";
 
 const REGIME_FILE = repoPath("market-regime-profiles.json");
 const USER_CONFIG_FILE = repoPath("user-config.json");

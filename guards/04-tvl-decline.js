@@ -1,4 +1,4 @@
-import { recordTvlObservation, getPriorTvlObservation } from "../pool-memory.js";
+import { recordTvlObservation, getPriorTvlObservation } from "../state/pool-memory.js";
 
 function numberOrNull(value) {
   const n = Number(value);

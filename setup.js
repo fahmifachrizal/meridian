@@ -4,11 +4,11 @@
  * Run: npm run setup
  */
 
-import "./envcrypt.js";
+import "./util/envcrypt.js";
 import readline from "readline";
 import fs from "fs";
 import { repoPath } from "./repo-root.js";
-import { getScreeningDefaultsForTimeframe, normalizeTimeframe } from "./screening-scales.js";
+import { getScreeningDefaultsForTimeframe, normalizeTimeframe } from "./core/screening-scales.js";
 
 const CONFIG_PATH = repoPath("user-config.json");
 const ENV_PATH    = repoPath(".env");
