@@ -1,11 +1,11 @@
 /**
  * Enriches test/fixtures/benchmark-positions.json with the two pieces of
- * metadata guard #1 (repeat-deploy cooldown) and guard #6 (token-age
+ * metadata guard #2 (repeat-deploy cooldown) and guard #1 (token-age
  * window) actually key off of, so test/test-benchmark.js can replay both
  * guards against real historical deploys offline:
  *
  *  - pool_created_at: the DLMM pool's own creation timestamp (not the
- *    token's mint date — see guard #6's fix earlier this session), fetched
+ *    token's mint date — see guard #1's fix earlier this session), fetched
  *    live from Meteora's pool-discovery API since it's not recorded
  *    anywhere in this repo's own JSON stores.
  *  - deploy_sequence: this position's 1-based index among all deploys ever

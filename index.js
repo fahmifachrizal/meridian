@@ -1,15 +1,15 @@
-import "./envcrypt.js";
+import "./util/envcrypt.js";
 import cron from "node-cron";
 import readline from "readline";
 import path from "path";
 import { fileURLToPath } from "url";
-import { agentLoop } from "./agent.js";
+import { agentLoop } from "./core/agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates, degenScore } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
-import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
+import { config, reloadScreeningThresholds, computeDeployAmount } from "./core/config.js";
+import { evolveThresholds, getPerformanceSummary } from "./state/lessons.js";
 import { executeTool, registerCronRestarter, applyConfigChanges } from "./tools/executor.js";
 import {
   startPolling,
@@ -26,22 +26,24 @@ import {
   createLiveMessage,
   escapeHtml,
   htmlTable,
-} from "./telegram.js";
-import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state.js";
-import { getActiveStrategy } from "./strategy-library.js";
-import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRelax, isRegimeSuppressed } from "./market-regime-library.js";
-import { classifyRegime } from "./market-regime.js";
-import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime-overlay.js";
+} from "./integrations/telegram.js";
+import { generateBriefing } from "./integrations/briefing.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state/state.js";
+import { getActiveStrategy } from "./state/strategy-library.js";
+import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRelax, isRegimeSuppressed } from "./regime/market-regime-library.js";
+import { classifyRegime } from "./regime/market-regime.js";
+import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime/regime-overlay.js";
 import { CONFIG_MAP } from "./tools/executor.js";
-import { recordPositionSnapshot, recallForPool, addPoolNote, recordRejection, getRecentRejectionCount } from "./pool-memory.js";
-import { checkSmartWalletsOnPool } from "./smart-wallets.js";
+import { recordPositionSnapshot, recallForPool, addPoolNote } from "./state/pool-memory.js";
+import { checkRejectionHysteresis } from "./guards/03-rejection-hysteresis.js";
+import { checkFastExit } from "./guards/06-fast-exit.js";
+import { checkSmartWalletsOnPool } from "./state/smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
-import { stageSignals } from "./signal-tracker.js";
-import { getWeightsSummary } from "./signal-weights.js";
-import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
-import { appendDecision } from "./decision-log.js";
-import { pullSupabaseConfig, startSupabaseConfigBackgroundSync } from "./supabase-config.js";
+import { stageSignals } from "./state/signal-tracker.js";
+import { getWeightsSummary } from "./state/signal-weights.js";
+import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./integrations/hivemind.js";
+import { appendDecision } from "./state/decision-log.js";
+import { pullSupabaseConfig, startSupabaseConfigBackgroundSync } from "./integrations/supabase-config.js";
 
 import { REPO_ROOT, repoPath } from "./repo-root.js";
 
@@ -548,37 +550,12 @@ export async function runScreeningCycle({ silent = false } = {}) {
         filteredOut.push({ name: pool.name, reason: `blocked launchpad (${launchpad})` });
         return false;
       }
-      const botPct = ti?.audit?.bot_holders_pct;
-      const top10Pct = ti?.audit?.top_holders_pct;
-      const maxBotHoldersPct = config.screening.maxBotHoldersPct;
-      const maxTop10Pct = config.screening.maxTop10Pct;
-      const hysteresisCount = config.screening.hysteresisRejectionCount ?? 2;
-      const hysteresisWindow = config.screening.hysteresisWindowHours ?? 24;
-      const hysteresisMargin = config.screening.hysteresisMarginPct ?? 5;
-
-      if (botPct != null && maxBotHoldersPct != null) {
-        // Guard #2: a pool rejected repeatedly on bot-holders shouldn't slip
-        // through the instant it dips just under the raw cutoff.
-        const priorRejections = getRecentRejectionCount(pool.pool, "bot_holders_pct", hysteresisWindow);
-        const effectiveCap = priorRejections >= hysteresisCount ? maxBotHoldersPct - hysteresisMargin : maxBotHoldersPct;
-        if (botPct > effectiveCap) {
-          const marginNote = priorRejections >= hysteresisCount ? ` (hysteresis: ${priorRejections} recent rejections, cap tightened by ${hysteresisMargin}%)` : "";
-          log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${effectiveCap}%${marginNote}`);
-          filteredOut.push({ name: pool.name, reason: `bot holders ${botPct}% > ${effectiveCap}%${marginNote}` });
-          recordRejection(pool.pool, "bot_holders_pct", botPct);
-          return false;
-        }
-      }
-      if (top10Pct != null && maxTop10Pct != null) {
-        const priorRejections = getRecentRejectionCount(pool.pool, "top10pct", hysteresisWindow);
-        const effectiveCap = priorRejections >= hysteresisCount ? maxTop10Pct - hysteresisMargin : maxTop10Pct;
-        if (top10Pct > effectiveCap) {
-          const marginNote = priorRejections >= hysteresisCount ? ` (hysteresis: ${priorRejections} recent rejections, cap tightened by ${hysteresisMargin}%)` : "";
-          log("screening", `Top10 filter: dropped ${pool.name} — top10 ${top10Pct}% > ${effectiveCap}%${marginNote}`);
-          filteredOut.push({ name: pool.name, reason: `top10 concentration ${top10Pct}% > ${effectiveCap}%${marginNote}` });
-          recordRejection(pool.pool, "top10pct", top10Pct);
-          return false;
-        }
+      // Guard #3: a pool rejected repeatedly on bot-holders%/top10% shouldn't
+      // slip through the instant it dips just under the raw cutoff.
+      const hysteresisResult = checkRejectionHysteresis(pool, ti, config.screening);
+      if (hysteresisResult.blocked) {
+        filteredOut.push({ name: pool.name, reason: hysteresisResult.reason });
+        return false;
       }
       return true;
     });
@@ -1036,10 +1013,16 @@ export function getDeterministicCloseRule(position, managementConfig) {
     return false;
   })();
 
-  // Guard #7: a repeat deploy tapered at entry gets a tighter, position-specific
-  // stop-loss (set on the position at deploy time) instead of the global default.
+  // Guard #5 (repeat-deploy size taper): a repeat deploy tapered at entry
+  // gets a tighter, position-specific stop-loss (set on the position at
+  // deploy time) instead of the global default.
   const effectiveStopLossPct = position.stop_loss_pct_override ?? managementConfig.stopLossPct;
 
+  // Rules 1-6 below are numbered in execution/precedence order — the order
+  // they're checked in is the order that matters when a position matches
+  // more than one condition at once. See guards/README or CLAUDE.md's
+  // "Market regime overlay" section for the guard-numbering scheme this
+  // mirrors on the deploy side.
   if (!pnlSuspect && position.pnl_pct != null && position.pnl_pct <= effectiveStopLossPct) {
     return { action: "CLOSE", rule: 1, reason: "stop loss" };
   }
@@ -1053,33 +1036,23 @@ export function getDeterministicCloseRule(position, managementConfig) {
   ) {
     return { action: "CLOSE", rule: 3, reason: "pumped far above range" };
   }
-  // Guard #4: don't wait out the full OOR timer if the position is already
-  // bleeding meaningfully — SalaryCat-SOL went OOR at 20:09 and didn't close
-  // until 20:19 at -35.96% because the full stop-loss/OOR-wait rules are
-  // independent lagging brakes. Close immediately once both conditions hold.
-  if (
-    managementConfig.fastExitOnOorEnabled &&
-    !pnlSuspect &&
-    position.pnl_pct != null &&
-    position.in_range === false &&
-    position.pnl_pct <= effectiveStopLossPct * (managementConfig.fastExitStopLossFraction ?? 0.5)
-  ) {
-    return { action: "CLOSE", rule: 6, reason: `Fast exit: OOR + PnL ${position.pnl_pct}% past ${managementConfig.fastExitStopLossFraction ?? 0.5} of stop-loss` };
-  }
+  // Guard #6 (fast OOR + negative-PnL exit): see guards/06-fast-exit.js.
+  const fastExitResult = checkFastExit(position, effectiveStopLossPct, pnlSuspect, managementConfig);
+  if (fastExitResult) return fastExitResult;
   if (
     position.active_bin != null &&
     position.upper_bin != null &&
     position.active_bin > position.upper_bin &&
     (position.minutes_out_of_range ?? 0) >= managementConfig.outOfRangeWaitMinutes
   ) {
-    return { action: "CLOSE", rule: 4, reason: "OOR" };
+    return { action: "CLOSE", rule: 5, reason: "OOR" };
   }
   if (
     position.fee_per_tvl_24h != null &&
     position.fee_per_tvl_24h < managementConfig.minFeePerTvl24h &&
     (position.age_minutes ?? 0) >= managementConfig.minAgeBeforeYieldCheck
   ) {
-    return { action: "CLOSE", rule: 5, reason: "low yield" };
+    return { action: "CLOSE", rule: 6, reason: "low yield" };
   }
   return null;
 }

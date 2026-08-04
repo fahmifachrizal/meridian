@@ -7,9 +7,11 @@
  */
 
 import fs from "fs";
-import { log } from "./logger.js";
-import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "./hivemind.js";
-import { repoPath } from "./repo-root.js";
+import { log } from "../logger.js";
+import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "../integrations/hivemind.js";
+import { repoPath } from "../repo-root.js";
+import { shouldPinAvoid } from "../guards/07-avoid-pin.js";
+import { flattenConfig, groupConfig } from "../core/config-groups.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 
@@ -183,15 +185,14 @@ export async function recordPerformance(perf) {
       exit_volume: perf.exit_volume,
     });
 
-    // Guard #5: pin an AVOID lesson for pools with a proven bad track
-    // record so they outrank the normal recency cap in future SCREENER
-    // prompts instead of aging out like any other lesson.
+    // Guard #7 (see guards/07-avoid-pin.js): pin an AVOID lesson for pools
+    // with a proven bad track record so they outrank the normal recency cap
+    // in future SCREENER prompts instead of aging out like any other lesson.
     const { getPoolMemory } = await import("./pool-memory.js");
-    const { config: liveConfig } = await import("./config.js");
+    const { config: liveConfig } = await import("../core/config.js");
     const memory = getPoolMemory({ pool_address: perf.pool });
-    const avoidThreshold = liveConfig.management.avoidPinThresholdPct ?? -10;
-    const minDeploys = liveConfig.management.avoidPinMinDeploys ?? 2;
-    if (memory?.known && memory.total_deploys >= minDeploys && memory.avg_pnl_pct <= avoidThreshold) {
+    const pinDecision = shouldPinAvoid(memory, liveConfig.management);
+    if (pinDecision) {
       const avoidTag = `avoid_pool:${perf.pool}`;
       const avoidRule = `AVOID: ${perf.pool_name || perf.pool} — ${memory.total_deploys} deploys, avg PnL ${memory.avg_pnl_pct}%, win rate ${memory.win_rate}%. Proven underperformer, do not redeploy.`;
       const dataAfterMemory = load();
@@ -221,7 +222,7 @@ export async function recordPerformance(perf) {
 
   // Evolve thresholds every 5 closed positions
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
-    const { config, reloadScreeningThresholds } = await import("./config.js");
+    const { config, reloadScreeningThresholds } = await import("../core/config.js");
     const result = evolveThresholds(data.performance, config);
     if (result?.changes && Object.keys(result.changes).length > 0) {
       reloadScreeningThresholds();
@@ -447,14 +448,14 @@ export function evolveThresholds(perfData, config) {
   // ── Persist changes to user-config.json ───────────────────────
   let userConfig = {};
   if (fs.existsSync(USER_CONFIG_PATH)) {
-    try { userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")); } catch { /* ignore */ }
+    try { userConfig = flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))); } catch { /* ignore */ }
   }
 
   Object.assign(userConfig, changes);
   userConfig._lastEvolved = new Date().toISOString();
   userConfig._positionsAtEvolution = perfData.length;
 
-  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(groupConfig(userConfig), null, 2));
 
   // Apply to live config object immediately
   const s = config.screening;

@@ -4,11 +4,12 @@
  * Run: npm run setup
  */
 
-import "./envcrypt.js";
+import "./util/envcrypt.js";
 import readline from "readline";
 import fs from "fs";
 import { repoPath } from "./repo-root.js";
-import { getScreeningDefaultsForTimeframe, normalizeTimeframe } from "./screening-scales.js";
+import { getScreeningDefaultsForTimeframe, normalizeTimeframe } from "./core/screening-scales.js";
+import { flattenConfig, groupConfig } from "./core/config-groups.js";
 
 const CONFIG_PATH = repoPath("user-config.json");
 const ENV_PATH    = repoPath(".env");
@@ -200,7 +201,7 @@ const PRESETS = {
 
 // ─── Load existing state ───────────────────────────────────────────────────────
 const existingConfig = fs.existsSync(CONFIG_PATH)
-  ? JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"))
+  ? flattenConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")))
   : {};
 const existingEnv = fs.existsSync(ENV_PATH)
   ? parseEnv(fs.readFileSync(ENV_PATH, "utf8"))
@@ -730,7 +731,7 @@ delete userConfig.takeProfitFeePct;
 delete userConfig.maxBundlePct;
 delete userConfig.athFilterPct;
 
-fs.writeFileSync(CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+fs.writeFileSync(CONFIG_PATH, JSON.stringify(groupConfig(userConfig), null, 2));
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
 const presetName = preset ? `${preset.label}` : "Custom";

@@ -117,6 +117,6 @@ delta:                +$42.91 / +0.574 SOL saved
 
 — i.e. the 3 known big losses being blocked/mitigated more than offsets the
 2 known false positives being blocked too. Same replay scope as
-`test-benchmark.js` (guards #1/#6/#7 for the deploy gate, rules 1/2/6 for
+`test-benchmark.js` (guards #1/#2/#5 for the deploy gate, rules 1/2/4 for
 the exit) — see `test/test-benchmark-eval.js`'s file header for the full
 scope statement.

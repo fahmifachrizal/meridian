@@ -5,10 +5,16 @@ node_modules/
 .env
 .env.*
 !.env.example
+!scripts/.env.vps.example
 .envrypt
 
 # User config (contains RPC URL, wallet key, API keys)
 user-config.json
+user-config.old.json
+
+# Ad-hoc backup snapshots (e.g. lessons.json.bak-pre-cleanup-<timestamp>)
+*.bak
+*.bak-*
 
 # GMGN fee-source config (contains API key)
 gmgn-config.json
@@ -33,6 +39,17 @@ logs/
 
 # OS
 .DS_Store
+
+# Python cache (scripts/*.py)
+__pycache__/
+*.pyc
+
+# Fetched market OHLCV data + synthetic market-replay benchmark fixture —
+# large (100MB+), regeneratable via scripts/fetch-pool-first-days-ohlcv.js +
+# scripts/build-market-benchmark-positions.js. Kept local-only, not in git.
+scripts/data/
+scripts/.cache/
+test/fixtures/market-benchmark-positions.json
 
 # Dev context
 context.md

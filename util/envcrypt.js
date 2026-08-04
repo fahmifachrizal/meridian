@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
-import { repoPath } from "./repo-root.js";
+import { repoPath } from "../repo-root.js";
 
 const DEFAULT_ENV_PATH = repoPath(".env");
 const DEFAULT_KEY_PATH = repoPath(".envrypt");

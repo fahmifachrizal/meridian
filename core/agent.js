@@ -1,8 +1,8 @@
 import OpenAI from "openai";
 import { jsonrepair } from "jsonrepair";
 import { buildSystemPrompt } from "./prompt.js";
-import { executeTool } from "./tools/executor.js";
-import { tools } from "./tools/definitions.js";
+import { executeTool } from "../tools/executor.js";
+import { tools } from "../tools/definitions.js";
 
 const MANAGER_TOOLS  = new Set(["close_position", "claim_fees", "swap_token", "get_position_pnl", "get_my_positions", "get_wallet_balance"]);
 const SCREENER_TOOLS = new Set(["deploy_position", "get_active_bin", "get_top_candidates", "check_smart_wallets_on_pool", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "get_pool_memory", "get_wallet_balance", "get_my_positions"]);
@@ -83,13 +83,13 @@ function getToolsForRole(agentType, goal = "") {
   if (matched.size === 0) return tools.filter(t => !GENERAL_INTENT_ONLY_TOOLS.has(t.function.name));
   return tools.filter(t => matched.has(t.function.name));
 }
-import { getWalletBalances } from "./tools/wallet.js";
-import { getMyPositions } from "./tools/dlmm.js";
-import { log } from "./logger.js";
+import { getWalletBalances } from "../tools/wallet.js";
+import { getMyPositions } from "../tools/dlmm.js";
+import { log } from "../logger.js";
 import { config } from "./config.js";
-import { getStateSummary } from "./state.js";
-import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
-import { getDecisionSummary } from "./decision-log.js";
+import { getStateSummary } from "../state/state.js";
+import { getLessonsForPrompt, getPerformanceSummary } from "../state/lessons.js";
+import { getDecisionSummary } from "../state/decision-log.js";
 
 // Supports OpenRouter (default) or any OpenAI-compatible local server (e.g. LM Studio)
 // To use LM Studio: set LLM_BASE_URL=http://localhost:1234/v1 and LLM_API_KEY=lm-studio in .env
@@ -165,7 +165,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   let weightsSummary = null;
   if (agentType === "SCREENER") {
     try {
-      const { getWeightsSummary } = await import("./signal-weights.js");
+      const { getWeightsSummary } = await import("../state/signal-weights.js");
       const { config } = await import("./config.js");
       if (config.darwin?.enabled) weightsSummary = getWeightsSummary();
     } catch { /* signal-weights not critical */ }

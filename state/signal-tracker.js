@@ -5,7 +5,7 @@
  * short-lived context rather than durable performance data.
  */
 
-import { log } from "./logger.js";
+import { log } from "../logger.js";
 
 // In-memory staging area — cleared after retrieval or after 10 minutes
 const _staged = new Map();

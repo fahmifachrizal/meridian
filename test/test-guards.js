@@ -7,13 +7,13 @@
 
 import { repoPath } from "../repo-root.js";
 import { createSuite, withRestoredFile } from "./lib/test-kit.js";
-import { getTokenAgeWindowRejectReason } from "../tools/screening.js";
+import { getTokenAgeWindowRejectReason } from "../guards/01-token-age-window.js";
 import {
   recordRejection,
   getRecentRejectionCount,
   recordTvlObservation,
   getPriorTvlObservation,
-} from "../pool-memory.js";
+} from "../state/pool-memory.js";
 
 const POOL_MEMORY_FILE = repoPath("pool-memory.json");
 const FAKE_POOL_HYSTERESIS = "TEST_GUARD_POOL_HYSTERESIS_DO_NOT_USE";
@@ -22,8 +22,8 @@ const FAKE_POOL_TVL = "TEST_GUARD_POOL_TVL_DO_NOT_USE";
 const suite = createSuite("Post-mortem guards (SalaryCat-SOL)");
 const { section, check } = suite;
 
-// ─── Guard #6: token-age deploy window ──────────────────────────
-section("Guard #6: token-age deploy window (6h early / 24h cooldown)");
+// ─── Guard #1: token-age deploy window ──────────────────────────
+section("Guard #1: token-age deploy window (6h early / 24h cooldown)");
 {
   const s = { tokenAgeWindowEnabled: true, tokenEarlyWindowMaxHours: 6, tokenCooldownHours: 24 };
   const now = Date.now();
@@ -47,11 +47,11 @@ section("Guard #6: token-age deploy window (6h early / 24h cooldown)");
   check("disabled toggle — always allowed even mid-cooldown", getTokenAgeWindowRejectReason(ageHours(15), disabled) === null);
 }
 
-// ─── Guard #2: rejection hysteresis + Guard #3: TVL decline ──────
+// ─── Guard #3: rejection hysteresis + Guard #4: TVL decline ──────
 // Both touch pool-memory.json with fake pool addresses — one snapshot/
 // restore wraps both so a failure partway through still cleans up.
 withRestoredFile(POOL_MEMORY_FILE, () => {
-  section("Guard #2: rejection hysteresis");
+  section("Guard #3: rejection hysteresis");
   check("no rejections recorded yet", getRecentRejectionCount(FAKE_POOL_HYSTERESIS, "bot_holders_pct", 24) === 0);
 
   recordRejection(FAKE_POOL_HYSTERESIS, "bot_holders_pct", 36);
@@ -69,7 +69,7 @@ withRestoredFile(POOL_MEMORY_FILE, () => {
   check("effective cap tightened to 30% after 2 rejections", effectiveCap === 30);
   check("34% still rejected under tightened cap", 34 > effectiveCap);
 
-  section("Guard #3: TVL/mcap decline check");
+  section("Guard #4: TVL/mcap decline check");
   check("no observation yet — fails open", getPriorTvlObservation(FAKE_POOL_TVL, 4) === null);
 
   recordTvlObservation(FAKE_POOL_TVL, 81_600); // SalaryCat-like entry TVL

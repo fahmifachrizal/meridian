@@ -1,7 +1,8 @@
 import fs from "fs";
-import { log } from "./logger.js";
-import { repoPath } from "./repo-root.js";
-import { reloadScreeningThresholds } from "./config.js";
+import { log } from "../logger.js";
+import { repoPath } from "../repo-root.js";
+import { reloadScreeningThresholds } from "../core/config.js";
+import { flattenConfig, groupConfig } from "../core/config-groups.js";
 import { notifyConfigChange } from "./telegram.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
@@ -19,10 +20,13 @@ export function isSupabaseConfigEnabled() {
   return !!(url && key && schema && table);
 }
 
+// Returns FLAT — Supabase's own schema is flat by design (see file header),
+// so every caller here works with flat keys; grouping only happens at the
+// local-file write boundary (groupConfig() right before writeFileSync).
 function readUserConfig() {
   if (!fs.existsSync(USER_CONFIG_PATH)) return {};
   try {
-    return JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+    return flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")));
   } catch {
     return {};
   }
@@ -68,7 +72,7 @@ export async function pullSupabaseConfig() {
       return local;
     }
 
-    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(local, null, 2));
+    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(groupConfig(local), null, 2));
     reloadScreeningThresholds();
     log("supabase_config", `pulled ${rows.length} keys from Supabase (${changes.length} changed)`);
     notifyConfigChange(changes, { source: "Supabase pull" }).catch(() => {});

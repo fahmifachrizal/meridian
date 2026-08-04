@@ -11,7 +11,7 @@ import {
 } from "@solana/web3.js";
 import BN from "bn.js";
 import bs58 from "bs58";
-import { config, computeDeployAmount, MIN_SAFE_BINS_BELOW } from "../config.js";
+import { config, computeDeployAmount, MIN_SAFE_BINS_BELOW } from "../core/config.js";
 import { log } from "../logger.js";
 import {
   trackPosition,
@@ -22,13 +22,13 @@ import {
   getTrackedPosition,
   minutesOutOfRange,
   syncOpenPositions,
-} from "../state.js";
-import { recordPerformance } from "../lessons.js";
-import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+} from "../state/state.js";
+import { recordPerformance } from "../state/lessons.js";
+import { isBaseMintOnCooldown, isPoolOnCooldown } from "../state/pool-memory.js";
 import { normalizeMint } from "./wallet.js";
-import { appendDecision } from "../decision-log.js";
+import { appendDecision } from "../state/decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
-import { getAndClearStagedSignals } from "../signal-tracker.js";
+import { getAndClearStagedSignals } from "../state/signal-tracker.js";
 import { computePositions, fetchDlmmPnlForPool } from "./pnl.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
@@ -1680,7 +1680,7 @@ export async function closePosition({ position_address, reason }) {
         } catch { /* non-blocking */ }
         try {
           const [{ getTokenInfo }, { checkSmartWalletsOnPool }] = await Promise.all([
-            import("./token.js"), import("../smart-wallets.js"),
+            import("./token.js"), import("../state/smart-wallets.js"),
           ]);
           const tokenInfo = await getTokenInfo({ query: closeBaseMint });
           const audit = tokenInfo?.results?.[0]?.audit;
@@ -2025,7 +2025,7 @@ export async function closePosition({ position_address, reason }) {
       } catch { /* non-blocking */ }
       try {
         const [{ getTokenInfo }, { checkSmartWalletsOnPool }] = await Promise.all([
-          import("./token.js"), import("../smart-wallets.js"),
+          import("./token.js"), import("../state/smart-wallets.js"),
         ]);
         const tokenInfo = await getTokenInfo({ query: closeBaseMint });
         const audit = tokenInfo?.results?.[0]?.audit;

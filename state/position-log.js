@@ -1,4 +1,4 @@
-import { log } from "./logger.js";
+import { log } from "../logger.js";
 
 function getSupabaseCreds() {
   const url = process.env.SUPABASE_URL;

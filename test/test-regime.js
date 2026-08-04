@@ -9,13 +9,15 @@
 import fs from "fs";
 import { repoPath } from "../repo-root.js";
 import { createSuite, withRestoredFile } from "./lib/test-kit.js";
-import { classifyRegime } from "../market-regime.js";
-import { getActiveRegime, setActiveRegime, listRegimeProfiles, getRegimeProfile } from "../market-regime-library.js";
+import { classifyRegime } from "../regime/market-regime.js";
+import { getActiveRegime, setActiveRegime, listRegimeProfiles, getRegimeProfile } from "../regime/market-regime-library.js";
 import { applyConfigChanges } from "../tools/executor.js";
-import { config } from "../config.js";
+import { config } from "../core/config.js";
+import { flattenConfig } from "../core/config-groups.js";
 
 const REGIME_FILE = repoPath("market-regime-profiles.json");
 const USER_CONFIG_FILE = repoPath("user-config.json");
+const LESSONS_FILE = repoPath("lessons.json");
 
 const suite = createSuite("Market-regime-aware screening");
 const { section, check } = suite;
@@ -88,7 +90,11 @@ section("applyConfigChanges — regime profile hot-apply");
 {
   const beforeStrategy = config.strategy.strategy;
   const beforeStopLoss = config.management.stopLossPct;
-  withRestoredFile(USER_CONFIG_FILE, () => {
+  // applyConfigChanges() calls addLesson() as an intrinsic side effect
+  // (writes a "[SELF-TUNED]" entry to lessons.json) — must be snapshotted
+  // and restored too, or this test leaks synthetic lessons into the real
+  // lesson history that later gets injected into the LLM's prompt.
+  withRestoredFile(LESSONS_FILE, () => withRestoredFile(USER_CONFIG_FILE, () => {
     try {
       const result = applyConfigChanges(
         { strategy: "spot", stopLossPct: -12 },
@@ -99,7 +105,7 @@ section("applyConfigChanges — regime profile hot-apply");
       check("live config.strategy.strategy mutated", config.strategy.strategy === "spot");
       check("live config.management.stopLossPct mutated", config.management.stopLossPct === -12);
 
-      const onDisk = JSON.parse(fs.readFileSync(USER_CONFIG_FILE, "utf8"));
+      const onDisk = flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_FILE, "utf8")));
       check("user-config.json persisted the change", onDisk.strategy === "spot" && onDisk.stopLossPct === -12);
 
       const unknownResult = applyConfigChanges({ totallyNotARealKey: 1 }, { reason: "test" });
@@ -108,8 +114,8 @@ section("applyConfigChanges — regime profile hot-apply");
       config.strategy.strategy = beforeStrategy;
       config.management.stopLossPct = beforeStopLoss;
     }
-  });
-  console.log("  (restored user-config.json + live config to pre-test values)");
+  }));
+  console.log("  (restored user-config.json + lessons.json + live config to pre-test values)");
 }
 
 process.exit(suite.finish());

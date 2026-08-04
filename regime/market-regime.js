@@ -7,7 +7,7 @@
  * carries import-time side effects (dev-blocklist, pool-memory).
  */
 
-import { degenScore } from "./tools/screening.js";
+import { degenScore } from "../tools/screening.js";
 
 function median(values) {
   if (values.length === 0) return null;

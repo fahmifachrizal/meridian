@@ -10,73 +10,8 @@ Meridian runs continuous screening and management cycles, deploying capital into
 
 ## Changelog
 
-### 2026-07-30 — Bounded regime overlay, Supabase pull-only, Telegram HTML revamp
-
-The market-regime auto-switcher (below) could previously write **absolute**
-config values straight to `user-config.json` and push them to Supabase — an
-automated market read could permanently overwrite the operator's own risk
-settings, and its `hot` profile actually sized *up* and widened the stop-loss
-in the most volatile conditions, the exact shape of the original
-SalaryCat-SOL loss. Replaced with a bounded system:
-
-- **Bounded, ratcheted, in-memory-only overlay** (`regime-overlay.js`) —
-  regime effects are now derived from the operator's own baseline, not
-  absolute. Screening bars (`minTvl`, `minVolume`, `minFeeActiveTvlRatio`,
-  `minOrganic`) may move both ways inside relative clamps; risk keys
-  (`deployAmountSol`, `positionSizePct`, `stopLossPct`) are **ratcheted** — a
-  regime can only ever reduce exposure below baseline, never increase it.
-  Applied to live config only; never written to `user-config.json`, never
-  pushed to Supabase. A restart or a Supabase pull always restores the
-  operator's baseline.
-- **Relax + loopback suppression** — after `regimeRelaxAfterFails` (default
-  3) consecutive no-deploy screening cycles, the active regime force-relaxes
-  back to `normal` regardless of whether the classifier can see enough
-  candidates to detect it. Without a follow-up fix this alone would
-  oscillate (relax → re-detect the same regime → tighten → starve → relax
-  → repeat); the regime just relaxed out of is now suppressed for
-  `regimeSuppressMinutes` (default 120) before it can be re-entered — other
-  regimes stay reachable, so adaptation isn't frozen.
-- **Supabase is now pull-only for the agent** — `update_config` no longer
-  pushes. Supabase is the operator's source of truth; publishing a new
-  baseline is an explicit operator action via `node scripts/push-config.js
-  --yes`.
-- **Telegram HTML revamp** — deploy/close/swap/config-change/OOR
-  notifications and the Screening Cycle live message now render as aligned
-  `<pre>` tables via a shared `htmlTable()` helper, plus a dedicated regime
-  transition notice that states the change is in-memory-only.
-- Fixed a real bug in the previous regime switcher: it read `.active` off a
-  regime profile object that only exposes `.id`, so the "has the regime
-  changed" check was permanently comparing against `"normal"`.
-
-### 2026-07-27 — Risk guard hardening (SalaryCat-SOL loss post-mortem)
-
-Root-caused a real trading loss (SalaryCat-SOL, three same-day deploys, third one
-lost -35.96% / -$16.23) and added seven config-driven safety guards, each verified
-against the real historical data for this and two other past ≥20% losses
-(WORM-SOL, Agamemnon-SOL):
-
-- **Repeat-deploy cooldown tightened** — `repeatDeployCooldownTriggerCount` 3 → 2, blocks a 3rd same-day deploy into one pool before it can lose money.
-- **Rejection hysteresis** — a pool rejected ≥2 times for bot-holders%/top10% concentration gets a tightened cap so it can't slip through the instant a metric dips just under the raw cutoff.
-- **Pre-deploy TVL/mcap decline check** — rejects a deploy if the pool's TVL has dropped >20% since the last observed screening pass, even if it still clears the static minimum.
-- **Token-age deploy window** — allows deploys in a pool's first 6h (early momentum), blocks hours 6–30 (highest-risk dump window), reopens after — using the DLMM pool's own creation time, not the token's original mint date.
-- **Repeat-deploy size taper + tighter stop-loss** — a 2nd+ deploy into a pool still within its early window gets a smaller position size (60%/40% tiers) and a tightened, position-specific stop-loss, since this is the one scenario none of the other guards can catch in time.
-- **Fast OOR + negative-PnL exit** — closes a position immediately once it's out-of-range (either direction) and already past half its effective stop-loss, instead of waiting the full OOR timer or full stop-loss threshold.
-- **AVOID-tagged pinned lessons** — a pool with a proven bad track record (≥2 deploys, avg PnL ≤ -10%) gets a pinned lesson that bypasses the normal recency cap in future SCREENER prompts.
-
-All 15 new config keys are settable via `update_config`/Telegram, default on, and
-backtested to have prevented all three known historical ≥20% losses.
-
-### 2026-07-14 → 2026-07-27 — Telegram group-topic messaging + Supabase integration
-
-- Telegram messages now route correctly into group topics/threads, with improved
-  message handling for group chats and fuller error logging on unclassified LLM
-  provider errors.
-- Added Supabase as an optional remote store: `supabase-config.js` syncs
-  `user-config.json` to/from a Supabase key-value table, and `position-log.js`
-  mirrors every deploy/close into `deploy_position`/`closed_position` tables
-  for external reporting. (Originally pushed on `update_config` too — see the
-  [2026-07-30 entry](#2026-07-30--bounded-regime-overlay-supabase-pull-only-telegram-html-revamp)
-  for why that push path was removed.)
+Moved to [CHANGELOG.md](CHANGELOG.md) — full history from the original fork
+onward.
 
 ---
 
@@ -715,7 +650,7 @@ There is currently no empty-string disable path for HiveMind; blank values fall 
 
 ## Supabase (optional remote config store)
 
-`supabase-config.js` can sync `user-config.json` to/from a Supabase
+`integrations/supabase-config.js` can sync `user-config.json` to/from a Supabase
 key-value table. **The agent only ever pulls** — on startup and every 15
 minutes (`startSupabaseConfigBackgroundSync`). Nothing the agent decides at
 runtime (including regime overlay changes — see above) is ever pushed
@@ -870,7 +805,7 @@ stateDiagram-v2
     Deploying --> Rejected: guard blocks\n(repeat-deploy cooldown, TVL decline,\ntoken-age window, hysteresis)
     Rejected --> [*]
 
-    Deploying --> Open: runSafetyChecks passes\n(guard #7 may taper size + tighten stop-loss)
+    Deploying --> Open: runSafetyChecks passes\n(guard #5 may taper size + tighten stop-loss)
 
     state Open {
         [*] --> InRange
@@ -884,7 +819,7 @@ stateDiagram-v2
     InRange --> Closed_LowYield: fee_per_tvl_24h < minFeePerTvl24h\nAND age >= minAgeBeforeYieldCheck
     InRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
     OutOfRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
-    OutOfRange --> Closed_FastExit: pnl_pct <= stopLossPct * fastExitFraction\n(guard #4 — fires before the full OOR wait)
+    OutOfRange --> Closed_FastExit: pnl_pct <= stopLossPct * fastExitFraction\n(guard #6 — fires before the full OOR wait)
     OutOfRange --> Closed_PumpedAbove: active_bin > upper_bin + outOfRangeBinsToClose
     OutOfRange --> Closed_OORWait: minutes_out_of_range >= outOfRangeWaitMinutes
     Open --> Closed_Manual: /close command, or LLM decision\n(position instruction condition met)
@@ -952,20 +887,48 @@ sequenceDiagram
 
 ```
 index.js            Main entry: REPL + cron orchestration + Telegram bot polling
-agent.js            ReAct loop: LLM → tool call → repeat
-config.js           Runtime config from user-config.json + .env (repo-root paths)
-repo-root.js        Stable absolute repo path — used by PM2, state files, and .env loading
-prompt.js           System prompt builder (SCREENER / MANAGER / GENERAL roles)
-state.js            Position registry (state.json)
-decision-log.js     Structured decision log for deploy, close, skip, and no-deploy rationale
-lessons.js          Learning engine: records performance, derives lessons, evolves thresholds
-pool-memory.js      Per-pool deploy history + snapshots
-strategy-library.js Saved LP strategies
-telegram.js         Telegram bot: polling + notifications
-hivemind.js         Agent Meridian HiveMind sync
-smart-wallets.js    KOL/alpha wallet tracker
-token-blacklist.js  Permanent token blacklist
-cli.js              Direct CLI — every tool as a subcommand with JSON output
+cli.js               Direct CLI — every tool as a subcommand with JSON output
+setup.js             Interactive first-run wizard
+repo-root.js         Stable absolute repo path — used by PM2, state files, and .env loading
+logger.js            Shared logger — near-universal dependency, stays at root
+
+core/
+  agent.js            ReAct loop: LLM → tool call → repeat
+  config.js           Runtime config from user-config.json + .env (repo-root paths)
+  prompt.js           System prompt builder (SCREENER / MANAGER / GENERAL roles)
+  screening-scales.js Timeframe-scaled screening defaults
+
+state/
+  state.js            Position registry (state.json)
+  decision-log.js     Structured decision log for deploy, close, skip, and no-deploy rationale
+  lessons.js          Learning engine: records performance, derives lessons, evolves thresholds
+  pool-memory.js      Per-pool deploy history + snapshots
+  strategy-library.js Saved LP strategies
+  smart-wallets.js    KOL/alpha wallet tracker
+  token-blacklist.js  Permanent token blacklist
+  dev-blocklist.js    Deployer wallet blocklist
+  signal-tracker.js   In-memory screening-signal staging
+  signal-weights.js   Darwinian signal weighting
+  position-log.js     Deploy/close events → Supabase
+
+regime/
+  market-regime.js         classifyRegime() decision tree
+  market-regime-library.js Active regime pointer, relax/suppression state
+  regime-overlay.js        Bounded, ratcheted config overlay — the only code path that changes config for a regime
+
+integrations/
+  telegram.js         Telegram bot: polling + notifications
+  hivemind.js         Agent Meridian HiveMind sync
+  supabase-config.js  Pull-only Supabase config sync
+  briefing.js         Daily HTML report
+
+guards/
+  01-token-age-window.js       through
+  07-avoid-pin.js              — the 7 post-mortem safety guards, one file
+                                 per guard, numbered by execution order
+
+util/
+  envcrypt.js         .env encryption
 
 tools/
   definitions.js    Tool schemas (OpenAI format)
@@ -977,7 +940,8 @@ tools/
   study.js          Top LPer study via LPAgent API
 
 discord-listener/
-  index.js          Selfbot Discord listener
+  index.js          Selfbot Discord listener (independent of the folder
+                     reorg above — computes its own repo-root path)
   pre-checks.js     Signal pre-check pipeline
 
 .claude/

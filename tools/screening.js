@@ -1,10 +1,12 @@
-import { config } from "../config.js";
-import { isBlacklisted } from "../token-blacklist.js";
-import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
+import { config } from "../core/config.js";
+import { isBlacklisted } from "../state/token-blacklist.js";
+import { isDevBlocked, getBlockedDevs } from "../state/dev-blocklist.js";
 import { log } from "../logger.js";
-import { isBaseMintOnCooldown, isPoolOnCooldown, recordTvlObservation } from "../pool-memory.js";
 import { confirmIndicatorPreset } from "./chart-indicators.js";
 import { getAgentMeridianBase, getAgentMeridianHeaders } from "./agent-meridian.js";
+import { getTokenAgeWindowRejectReason } from "../guards/01-token-age-window.js";
+import { checkRepeatDeployCooldown } from "../guards/02-repeat-deploy-cooldown.js";
+import { recordTvlSnapshot } from "../guards/04-tvl-decline.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
@@ -145,7 +147,7 @@ function getRawPoolScreeningRejectReason(pool, s) {
   const quoteOrganic = numeric(quote?.organic_score);
   const launchpad = getPoolLaunchpad(pool);
   const createdAt = numeric(base?.created_at);
-  // Guard #6 needs the DLMM *pool's* age, not the token's original mint date —
+  // Guard #1 needs the DLMM *pool's* age, not the token's original mint date —
   // for a pump.fun graduation, base.created_at is the token's launch (can be
   // weeks earlier); pool_created_at is when this specific pool (the thing
   // Meridian is actually pricing risk on) came into existence.
@@ -202,29 +204,6 @@ function getRawPoolScreeningRejectReason(pool, s) {
   const ageWindowReason = getTokenAgeWindowRejectReason(poolCreatedAt, s);
   if (ageWindowReason) return ageWindowReason;
   return null;
-}
-
-/**
- * Guard #6 — token-age deploy window: allow deploys in the token's first
- * `tokenEarlyWindowMaxHours` (genuine early-momentum plays), then hard-block
- * for the following `tokenCooldownHours` (the highest-risk pump/dump
- * distribution window), then allow again indefinitely past that point.
- * Fails open if the token's creation time is unknown.
- */
-export function getTokenAgeWindowRejectReason(createdAt, s) {
-  if (!s.tokenAgeWindowEnabled) return null;
-  if (createdAt == null) return null;
-
-  const earlyWindowMs = (s.tokenEarlyWindowMaxHours ?? 6) * 3_600_000;
-  const cooldownMs = (s.tokenCooldownHours ?? 24) * 3_600_000;
-  const ageMs = Date.now() - createdAt;
-  if (ageMs <= earlyWindowMs) return null; // within early-momentum window
-  if (ageMs > earlyWindowMs + cooldownMs) return null; // past cooldown, reopened
-
-  const ageHours = (ageMs / 3_600_000).toFixed(1);
-  const earlyHours = s.tokenEarlyWindowMaxHours ?? 6;
-  const reopenHours = earlyHours + (s.tokenCooldownHours ?? 24);
-  return `token age ${ageHours}h in cooldown window (${earlyHours}h–${reopenHours}h)`;
 }
 
 async function fetchDiscordSignalCandidates() {
@@ -623,7 +602,7 @@ export async function discoverPools({
  * Hard filters applied in code, agent decides which to deploy into.
  */
 export async function getTopCandidates({ limit = 10 } = {}) {
-  const { config } = await import("../config.js");
+  const { config } = await import("../core/config.js");
   const discovery = await discoverPools({ page_size: 50 });
   const { pools } = discovery;
   const filteredOut = Array.isArray(discovery.filtered_examples) ? [...discovery.filtered_examples] : [];
@@ -665,14 +644,14 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         pushFilteredReason(filteredOut, p, "already holding this base token in another pool");
         return false;
       }
-      if (isPoolOnCooldown(p.pool)) {
-        log("screening", `Filtered cooldown pool ${p.name} (${p.pool.slice(0, 8)})`);
-        pushFilteredReason(filteredOut, p, "pool cooldown active");
-        return false;
-      }
-      if (isBaseMintOnCooldown(p.base?.mint)) {
-        log("screening", `Filtered cooldown token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)})`);
-        pushFilteredReason(filteredOut, p, "token cooldown active");
+      const cooldownCheck = checkRepeatDeployCooldown(p.pool, p.base?.mint);
+      if (cooldownCheck.blocked) {
+        if (cooldownCheck.reason === "pool cooldown active") {
+          log("screening", `Filtered cooldown pool ${p.name} (${p.pool.slice(0, 8)})`);
+        } else {
+          log("screening", `Filtered cooldown token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)})`);
+        }
+        pushFilteredReason(filteredOut, p, cooldownCheck.reason);
         return false;
       }
       return true;
@@ -680,11 +659,11 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
     .slice(0, limit);
 
-  // Guard #3: record TVL for each recon'd candidate so a pre-deploy check
+  // Guard #4: record TVL for each recon'd candidate so a pre-deploy check
   // can later detect a pool whose liquidity collapsed after this cycle.
   for (const p of eligible) {
     const tvl = Number(p.tvl ?? p.active_tvl);
-    if (Number.isFinite(tvl)) recordTvlObservation(p.pool, tvl);
+    if (Number.isFinite(tvl)) recordTvlSnapshot(p.pool, tvl);
   }
 
   if (config.screening.avoidPvpSymbols && eligible.length > 0) {

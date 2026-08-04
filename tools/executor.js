@@ -11,22 +11,25 @@ import {
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
-import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction } from "../state.js";
+import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../state/lessons.js";
+import { setPositionInstruction } from "../state/state.js";
 
-import { getPoolMemory, addPoolNote, recordTvlObservation, getPriorTvlObservation } from "../pool-memory.js";
-import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
-import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
-import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
-import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
+import { getPoolMemory, addPoolNote } from "../state/pool-memory.js";
+import { checkTvlDecline, recordTvlSnapshot } from "../guards/04-tvl-decline.js";
+import { computeDeployTaper } from "../guards/05-repeat-deploy-taper.js";
+import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../state/strategy-library.js";
+import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../state/token-blacklist.js";
+import { blockDev, unblockDev, listBlockedDevs } from "../state/dev-blocklist.js";
+import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../state/smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
-import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../config.js";
-import { getRecentDecisions } from "../decision-log.js";
-import { recordDeploy, recordClose } from "../position-log.js";
+import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../core/config.js";
+import { flattenConfig, groupConfig } from "../core/config-groups.js";
+import { getRecentDecisions } from "../state/decision-log.js";
+import { recordDeploy, recordClose } from "../state/position-log.js";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
 import { REPO_ROOT, repoPath } from "../repo-root.js";
-import { normalizeTimeframe, scaleScreeningToTimeframe } from "../screening-scales.js";
+import { normalizeTimeframe, scaleScreeningToTimeframe } from "../core/screening-scales.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
@@ -41,7 +44,7 @@ const TIMEFRAME_MINUTES = {
   "24h": 1440,
 };
 import { log, logAction } from "../logger.js";
-import { notifyDeploy, notifyClose, notifySwap, notifyConfigChange } from "../telegram.js";
+import { notifyDeploy, notifyClose, notifySwap, notifyConfigChange } from "../integrations/telegram.js";
 
 function numberOrNull(value) {
   const n = Number(value);
@@ -115,24 +118,15 @@ async function validateDeployPoolThresholds(args) {
     };
   }
 
-  // Guard #3: reject a pool whose TVL is actively collapsing right now,
-  // even if the absolute value still clears minTvl. Fails open if there's
-  // no recent-enough observation to compare against.
-  const maxSnapshotAgeHours = numberOrNull(config.management.maxTvlSnapshotAgeHours);
-  const maxTvlDeclinePct = numberOrNull(config.management.maxTvlDeclinePctForDeploy);
-  if (maxSnapshotAgeHours != null && maxTvlDeclinePct != null) {
-    const priorObservation = getPriorTvlObservation(args.pool_address, maxSnapshotAgeHours);
-    if (priorObservation && priorObservation.tvl > 0) {
-      const declinePct = ((priorObservation.tvl - tvl) / priorObservation.tvl) * 100;
-      if (declinePct > maxTvlDeclinePct) {
-        return {
-          pass: false,
-          reason: `Pool TVL declining ${declinePct.toFixed(1)}% since ${priorObservation.ts} ($${priorObservation.tvl} → $${tvl}) — exceeds maxTvlDeclinePctForDeploy ${maxTvlDeclinePct}%.`,
-        };
-      }
-    }
+  // Guard #4 (see guards/04-tvl-decline.js): reject a pool whose TVL is
+  // actively collapsing right now, even if the absolute value still clears
+  // minTvl. Fails open if there's no recent-enough observation to compare
+  // against.
+  const tvlDeclineCheck = checkTvlDecline(args.pool_address, tvl, config.management);
+  if (tvlDeclineCheck.blocked) {
+    return { pass: false, reason: tvlDeclineCheck.reason };
   }
-  recordTvlObservation(args.pool_address, tvl);
+  recordTvlSnapshot(args.pool_address, tvl);
 
   const feeActiveTvlRatio = poolDetailFeeActiveTvlRatio(detail);
   const minFeeActiveTvlRatio = numberOrNull(config.screening.minFeeActiveTvlRatio);
@@ -196,7 +190,7 @@ async function validateDeployPoolThresholds(args) {
       ? Math.floor((Date.now() - detail.token_x.created_at) / 3_600_000)
       : null,
     // Pool's own age, not the token's mint date — for a pump.fun graduation
-    // the pool can be created weeks after the token itself (see guard #6/#7).
+    // the pool can be created weeks after the token itself (see guard #1/#5).
     pool_age_hours: (detail?.pool_created_at ?? detail?.token_x?.created_at)
       ? (Date.now() - (detail.pool_created_at ?? detail.token_x.created_at)) / 3_600_000
       : null,
@@ -323,11 +317,11 @@ export const CONFIG_MAP = {
   maxTokenAgeHours: ["screening", "maxTokenAgeHours"],
   minFeePerTvl24h: ["management", "minFeePerTvl24h"],
   loneCandidateMinDegen: ["screening", "loneCandidateMinDegen"],
-  // guard #2 — rejection hysteresis
+  // guard #3 — rejection hysteresis
   hysteresisRejectionCount: ["screening", "hysteresisRejectionCount"],
   hysteresisWindowHours: ["screening", "hysteresisWindowHours"],
   hysteresisMarginPct: ["screening", "hysteresisMarginPct"],
-  // guard #6 — token-age deploy window
+  // guard #1 — token-age deploy window
   tokenAgeWindowEnabled: ["screening", "tokenAgeWindowEnabled"],
   tokenEarlyWindowMaxHours: ["screening", "tokenEarlyWindowMaxHours"],
   tokenCooldownHours: ["screening", "tokenCooldownHours"],
@@ -353,16 +347,16 @@ export const CONFIG_MAP = {
   trailingTriggerPct: ["management", "trailingTriggerPct"],
   trailingDropPct: ["management", "trailingDropPct"],
   pnlSanityMaxDiffPct: ["management", "pnlSanityMaxDiffPct"],
-  // guard #3 — pre-deploy TVL/mcap decline check
+  // guard #4 — pre-deploy TVL/mcap decline check
   maxTvlSnapshotAgeHours: ["management", "maxTvlSnapshotAgeHours"],
   maxTvlDeclinePctForDeploy: ["management", "maxTvlDeclinePctForDeploy"],
-  // guard #4 — fast OOR + negative-PnL exit
+  // guard #6 — fast OOR + negative-PnL exit
   fastExitOnOorEnabled: ["management", "fastExitOnOorEnabled"],
   fastExitStopLossFraction: ["management", "fastExitStopLossFraction"],
-  // guard #5 — AVOID-tagged pinned lessons
+  // guard #7 — AVOID-tagged pinned lessons
   avoidPinThresholdPct: ["management", "avoidPinThresholdPct"],
   avoidPinMinDeploys: ["management", "avoidPinMinDeploys"],
-  // guard #7 — repeat-deploy size taper + tightened stop-loss
+  // guard #5 — repeat-deploy size taper + tightened stop-loss
   repeatDeploySizeTaperEnabled: ["management", "repeatDeploySizeTaperEnabled"],
   repeatDeploySizeTaperPct: ["management", "repeatDeploySizeTaperPct"],
   repeatDeployStopLossFraction: ["management", "repeatDeployStopLossFraction"],
@@ -488,7 +482,7 @@ export function applyConfigChanges(changes, { reason = "", lessonTags = ["self_t
   let userConfig = {};
   if (fs.existsSync(USER_CONFIG_PATH)) {
     try {
-      userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      userConfig = flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")));
     } catch (error) {
       return { success: false, error: `Invalid user-config.json: ${error.message}`, reason };
     }
@@ -549,7 +543,7 @@ export function applyConfigChanges(changes, { reason = "", lessonTags = ["self_t
     }
   }
   userConfig._lastAgentTune = new Date().toISOString();
-  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(groupConfig(userConfig), null, 2));
   // NOTE: deliberately does NOT push to Supabase. Supabase is the operator's
   // source of truth and is PULL-ONLY for the agent — nothing the agent decides
   // may propagate upstream and overwrite the operator's baseline. Pushing is an
@@ -997,30 +991,17 @@ async function runSafetyChecks(name, args) {
         }
       }
 
-      // Guard #7: taper size + tighten stop-loss on a 2nd+ deploy into a pool
-      // still inside its early-momentum window — the exact scenario where
-      // guards 1/5/6 can't help yet (no repeat-deploy history, no prior
-      // close, still within the allowed age window).
-      let amountY = deployAmountY;
-      let taperSizeCap = null;
-      if (config.management.repeatDeploySizeTaperEnabled) {
-        const poolAgeHours = numberOrNull(args.pool_age_hours);
-        const earlyWindowHours = numberOrNull(config.screening.tokenEarlyWindowMaxHours) ?? 6;
-        const priorDeploys = getPoolMemory({ pool_address: args.pool_address })?.total_deploys ?? 0;
-        if (priorDeploys >= 1 && poolAgeHours != null && poolAgeHours <= earlyWindowHours) {
-          const taperPct = config.management.repeatDeploySizeTaperPct ?? [0.6, 0.4];
-          const taperIndex = Math.min(priorDeploys - 1, taperPct.length - 1);
-          const taperMultiplier = Number(taperPct[taperIndex] ?? taperPct[taperPct.length - 1]);
-          taperSizeCap = Math.max(0.1, config.management.deployAmountSol * taperMultiplier);
-          if (amountY > taperSizeCap) {
-            log("screening", `Guard #7: repeat deploy #${priorDeploys + 1} into ${args.pool_address.slice(0, 8)} (pool age ${poolAgeHours.toFixed(1)}h) — tapering size from ${amountY} to ${taperSizeCap} SOL`);
-            amountY = taperSizeCap;
-            args.amount_y = taperSizeCap;
-          }
-          const tightenedStopLoss = config.management.stopLossPct * (config.management.repeatDeployStopLossFraction ?? 0.5);
-          args.stop_loss_pct_override = tightenedStopLoss;
-          log("screening", `Guard #7: repeat deploy #${priorDeploys + 1} into ${args.pool_address.slice(0, 8)} — tightened stop-loss to ${tightenedStopLoss.toFixed(2)}%`);
-        }
+      // Guard #5 (see guards/05-repeat-deploy-taper.js): taper size + tighten
+      // stop-loss on a 2nd+ deploy into a pool still inside its
+      // early-momentum window — the exact scenario where guards 1/2/3
+      // can't help yet (no repeat-deploy history, no prior close, still
+      // within the allowed age window).
+      const taperResult = computeDeployTaper(args.pool_address, deployAmountY, args.pool_age_hours, config);
+      let amountY = taperResult.amountY;
+      const taperSizeCap = taperResult.taperSizeCap;
+      if (taperResult.tapered) {
+        args.amount_y = taperResult.amountY;
+        args.stop_loss_pct_override = taperResult.stopLossOverride;
       }
 
       // Check amount limits
@@ -1031,7 +1012,7 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // A guard #7 taper intentionally goes below the normal floor — use its
+      // A guard #5 taper intentionally goes below the normal floor — use its
       // own (still >= 0.1 SOL) cap as the floor instead of the standard one.
       const minDeploy = taperSizeCap != null ? taperSizeCap : Math.max(0.1, config.management.deployAmountSol);
       if (amountY < minDeploy) {

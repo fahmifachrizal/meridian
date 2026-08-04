@@ -1,6 +1,7 @@
 import fs from "fs";
-import { REPO_ROOT, repoPath } from "./repo-root.js";
+import { REPO_ROOT, repoPath } from "../repo-root.js";
 import { getScreeningDefaultsForTimeframe, normalizeTimeframe, scaleScreeningToTimeframe, TIMEFRAME_SCREENING_SCALES } from "./screening-scales.js";
+import { flattenConfig } from "./config-groups.js";
 
 export { REPO_ROOT, repoPath, getScreeningDefaultsForTimeframe, normalizeTimeframe, scaleScreeningToTimeframe, TIMEFRAME_SCREENING_SCALES };
 
@@ -10,9 +11,15 @@ const DEFAULT_AGENT_MERIDIAN_API_URL = "https://api.agentmeridian.xyz/api";
 const DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY = "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz";
 const DEFAULT_HIVEMIND_API_KEY = DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY;
 
-const u = fs.existsSync(USER_CONFIG_PATH)
-  ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
-  : {};
+// user-config.json is stored grouped on disk (screening/management/etc,
+// see core/config-groups.js) but every read below still uses the historical
+// flat key names — flattening once here means nothing past this line needs
+// to know the file is grouped.
+const u = flattenConfig(
+  fs.existsSync(USER_CONFIG_PATH)
+    ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
+    : {},
+);
 export const MIN_SAFE_BINS_BELOW = 35;
 
 function numericConfig(value) {
@@ -98,11 +105,11 @@ export const config = {
     blockedLaunchpads:  u.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
-    // Rejection hysteresis (guard #2) — repeated borderline rejections tighten the bar
+    // Rejection hysteresis (guard #3) — repeated borderline rejections tighten the bar
     hysteresisRejectionCount: u.hysteresisRejectionCount ?? 2,
     hysteresisWindowHours:    u.hysteresisWindowHours    ?? 24,
     hysteresisMarginPct:      u.hysteresisMarginPct      ?? 5,
-    // Token-age deploy window (guard #6) — early momentum, then cooldown, then reopen
+    // Token-age deploy window (guard #1) — early momentum, then cooldown, then reopen
     tokenAgeWindowEnabled:    u.tokenAgeWindowEnabled    ?? true,
     tokenEarlyWindowMaxHours: u.tokenEarlyWindowMaxHours ?? 6,
     tokenCooldownHours:       u.tokenCooldownHours       ?? 24,
@@ -128,16 +135,16 @@ export const config = {
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
-    // Pre-deploy TVL/mcap decline check (guard #3)
+    // Pre-deploy TVL/mcap decline check (guard #4)
     maxTvlSnapshotAgeHours:    u.maxTvlSnapshotAgeHours    ?? 4,
     maxTvlDeclinePctForDeploy: u.maxTvlDeclinePctForDeploy ?? 20,
-    // Fast OOR + negative-PnL exit (guard #4)
+    // Fast OOR + negative-PnL exit (guard #6)
     fastExitOnOorEnabled:    u.fastExitOnOorEnabled    ?? true,
     fastExitStopLossFraction: u.fastExitStopLossFraction ?? 0.5,
-    // AVOID-tagged pinned lessons (guard #5)
+    // AVOID-tagged pinned lessons (guard #7)
     avoidPinThresholdPct: u.avoidPinThresholdPct ?? -10,
     avoidPinMinDeploys:   u.avoidPinMinDeploys   ?? 2,
-    // Repeat-deploy size taper + tightened stop-loss (guard #7) — a 2nd+ deploy
+    // Repeat-deploy size taper + tightened stop-loss (guard #5) — a 2nd+ deploy
     // into the same pool while it's still within the early-momentum window
     // (screening.tokenEarlyWindowMaxHours) is strictly higher variance than the
     // 1st, so it risks less capital and gets cut faster if wrong.
@@ -337,7 +344,7 @@ export function computeDeployAmount(walletSol) {
 export function reloadScreeningThresholds() {
   try {
     if (!fs.existsSync(USER_CONFIG_PATH)) return;
-    const fresh = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+    const fresh = flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")));
     const s = config.screening;
     if (fresh.minFeeActiveTvlRatio != null) s.minFeeActiveTvlRatio = fresh.minFeeActiveTvlRatio;
     if (fresh.minTokenFeesSol  != null) s.minTokenFeesSol  = fresh.minTokenFeesSol;

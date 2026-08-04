@@ -5,17 +5,34 @@
  * what actually happened historically.
  *
  * Usage:
- *   node scripts/evaluate-config.js                 # evaluates the live config (user-config.json + defaults)
- *   node scripts/evaluate-config.js path/to/cfg.json # evaluates a candidate config — merges onto the live
- *                                                     # config's screening/management sections (partial override)
+ *   node scripts/evaluate-config.js                          # evaluates the live config, 8-position curated fixture
+ *   node scripts/evaluate-config.js path/to/cfg.json          # candidate config — merges onto the live
+ *                                                              # config's screening/management sections (partial override)
+ *   node scripts/evaluate-config.js --fixture=market          # same live config, against the ~300-position
+ *                                                              # real-market-replay fixture instead (see
+ *                                                              # scripts/build-market-benchmark-positions.js)
+ *   node scripts/evaluate-config.js path/to/cfg.json --fixture=market   # both together
  */
 
 import fs from "fs";
 import { repoPath } from "../repo-root.js";
-import { config as liveConfig } from "../config.js";
+import { config as liveConfig } from "../core/config.js";
 import { evaluateConfig } from "../test/lib/benchmark-eval.js";
 
-const candidatePath = process.argv[2];
+const args = process.argv.slice(2);
+const fixtureArg = args.find((a) => a.startsWith("--fixture="))?.split("=")[1];
+const candidatePath = args.find((a) => !a.startsWith("--"));
+
+const FIXTURE_FILES = {
+  default: "test/fixtures/benchmark-positions.json",
+  market: "test/fixtures/market-benchmark-positions.json",
+};
+const fixturePath = FIXTURE_FILES[fixtureArg ?? "default"];
+if (!fixturePath) {
+  console.error(`Unknown --fixture value "${fixtureArg}" — expected one of: ${Object.keys(FIXTURE_FILES).join(", ")}`);
+  process.exit(1);
+}
+
 let cfg = liveConfig;
 if (candidatePath) {
   const overrides = JSON.parse(fs.readFileSync(candidatePath, "utf8"));
@@ -28,8 +45,9 @@ if (candidatePath) {
 } else {
   console.log("Evaluating the live config (user-config.json + defaults)\n");
 }
+console.log(`Fixture: ${fixturePath}\n`);
 
-const fixture = JSON.parse(fs.readFileSync(repoPath("test/fixtures/benchmark-positions.json"), "utf8"));
+const fixture = JSON.parse(fs.readFileSync(repoPath(fixturePath), "utf8"));
 const poolMemory = JSON.parse(fs.readFileSync(repoPath("pool-memory.json"), "utf8"));
 
 const result = evaluateConfig(cfg, fixture.positions, poolMemory);

@@ -19,7 +19,7 @@ import {
   noteRegimeRelax,
   isRegimeSuppressed,
   clearRegimeSuppression,
-} from "../market-regime-library.js";
+} from "../regime/market-regime-library.js";
 
 const suite = createSuite("QA protocol — regime state machine");
 const { section, check } = suite;
