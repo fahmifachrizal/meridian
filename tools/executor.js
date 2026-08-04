@@ -23,6 +23,7 @@ import { blockDev, unblockDev, listBlockedDevs } from "../state/dev-blocklist.js
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../state/smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../core/config.js";
+import { flattenConfig, groupConfig } from "../core/config-groups.js";
 import { getRecentDecisions } from "../state/decision-log.js";
 import { recordDeploy, recordClose } from "../state/position-log.js";
 import fs from "fs";
@@ -481,7 +482,7 @@ export function applyConfigChanges(changes, { reason = "", lessonTags = ["self_t
   let userConfig = {};
   if (fs.existsSync(USER_CONFIG_PATH)) {
     try {
-      userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      userConfig = flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")));
     } catch (error) {
       return { success: false, error: `Invalid user-config.json: ${error.message}`, reason };
     }
@@ -542,7 +543,7 @@ export function applyConfigChanges(changes, { reason = "", lessonTags = ["self_t
     }
   }
   userConfig._lastAgentTune = new Date().toISOString();
-  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(groupConfig(userConfig), null, 2));
   // NOTE: deliberately does NOT push to Supabase. Supabase is the operator's
   // source of truth and is PULL-ONLY for the agent — nothing the agent decides
   // may propagate upstream and overwrite the operator's baseline. Pushing is an

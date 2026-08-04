@@ -40,6 +40,17 @@ logs/
 # OS
 .DS_Store
 
+# Python cache (scripts/*.py)
+__pycache__/
+*.pyc
+
+# Fetched market OHLCV data + synthetic market-replay benchmark fixture —
+# large (100MB+), regeneratable via scripts/fetch-pool-first-days-ohlcv.js +
+# scripts/build-market-benchmark-positions.js. Kept local-only, not in git.
+scripts/data/
+scripts/.cache/
+test/fixtures/market-benchmark-positions.json
+
 # Dev context
 context.md
 CONTEXT.md

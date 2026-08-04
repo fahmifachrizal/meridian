@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { log } from "../logger.js";
 import { config } from "../core/config.js";
 import { repoPath } from "../repo-root.js";
+import { flattenConfig, groupConfig } from "../core/config-groups.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 const CACHE_PATH = repoPath("hivemind-cache.json");
@@ -46,11 +47,11 @@ function getVersion() {
 const AGENT_VERSION = getVersion();
 
 function readUserConfig() {
-  return readJson(USER_CONFIG_PATH, {});
+  return flattenConfig(readJson(USER_CONFIG_PATH, {}));
 }
 
 function writeUserConfig(nextConfig) {
-  writeJson(USER_CONFIG_PATH, nextConfig);
+  writeJson(USER_CONFIG_PATH, groupConfig(nextConfig));
 }
 
 function readCache() {

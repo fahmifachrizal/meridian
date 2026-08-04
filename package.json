@@ -28,6 +28,8 @@
     "test:benchmark": "DRY_RUN=true node test/test-benchmark.js",
     "test:benchmark-eval": "DRY_RUN=true node test/test-benchmark-eval.js",
     "evaluate-config": "DRY_RUN=true node scripts/evaluate-config.js",
+    "evaluate-config:market": "DRY_RUN=true node scripts/evaluate-config.js --fixture=market",
+    "build:market-benchmark": "node scripts/build-market-benchmark-positions.js",
     "test:screen": "node test/test-screening.js",
     "test:agent": "DRY_RUN=true node test/test-agent.js",
     "postinstall": "node scripts/patch-anchor.js",

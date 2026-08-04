@@ -11,6 +11,7 @@ import { log } from "../logger.js";
 import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "../integrations/hivemind.js";
 import { repoPath } from "../repo-root.js";
 import { shouldPinAvoid } from "../guards/07-avoid-pin.js";
+import { flattenConfig, groupConfig } from "../core/config-groups.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 
@@ -447,14 +448,14 @@ export function evolveThresholds(perfData, config) {
   // ── Persist changes to user-config.json ───────────────────────
   let userConfig = {};
   if (fs.existsSync(USER_CONFIG_PATH)) {
-    try { userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")); } catch { /* ignore */ }
+    try { userConfig = flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))); } catch { /* ignore */ }
   }
 
   Object.assign(userConfig, changes);
   userConfig._lastEvolved = new Date().toISOString();
   userConfig._positionsAtEvolution = perfData.length;
 
-  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(groupConfig(userConfig), null, 2));
 
   // Apply to live config object immediately
   const s = config.screening;

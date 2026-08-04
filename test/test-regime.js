@@ -13,6 +13,7 @@ import { classifyRegime } from "../regime/market-regime.js";
 import { getActiveRegime, setActiveRegime, listRegimeProfiles, getRegimeProfile } from "../regime/market-regime-library.js";
 import { applyConfigChanges } from "../tools/executor.js";
 import { config } from "../core/config.js";
+import { flattenConfig } from "../core/config-groups.js";
 
 const REGIME_FILE = repoPath("market-regime-profiles.json");
 const USER_CONFIG_FILE = repoPath("user-config.json");
@@ -104,7 +105,7 @@ section("applyConfigChanges — regime profile hot-apply");
       check("live config.strategy.strategy mutated", config.strategy.strategy === "spot");
       check("live config.management.stopLossPct mutated", config.management.stopLossPct === -12);
 
-      const onDisk = JSON.parse(fs.readFileSync(USER_CONFIG_FILE, "utf8"));
+      const onDisk = flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_FILE, "utf8")));
       check("user-config.json persisted the change", onDisk.strategy === "spot" && onDisk.stopLossPct === -12);
 
       const unknownResult = applyConfigChanges({ totallyNotARealKey: 1 }, { reason: "test" });

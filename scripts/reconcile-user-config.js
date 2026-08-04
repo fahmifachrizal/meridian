@@ -25,6 +25,7 @@
 import fs from "fs";
 import { loadEnv } from "../util/envcrypt.js";
 import { repoPath } from "../repo-root.js";
+import { flattenConfig, groupConfig } from "../core/config-groups.js";
 
 loadEnv();
 
@@ -55,9 +56,13 @@ if (isSupabaseConfigEnabled()) {
 }
 
 // ── Step 2: local > VPS (gap-fill only, lowest priority) ──────────
+// Local is stored grouped on disk; the VPS copy may or may not be migrated
+// yet. flattenConfig() is idempotent, so both are safe to flatten here
+// regardless — comparisons below are always against real leaf keys, never
+// group names.
 console.log("  [2/3] Filling gaps from the VPS copy (lowest priority — never overrides)...");
-const local = readJson(LOCAL_PATH, {});
-const vps = readJson(vpsConfigPath, {});
+const local = flattenConfig(readJson(LOCAL_PATH, {}));
+const vps = flattenConfig(readJson(vpsConfigPath, {}));
 
 const filledFromVps = [];
 for (const [key, value] of Object.entries(vps)) {
@@ -68,7 +73,7 @@ for (const [key, value] of Object.entries(vps)) {
 }
 
 if (filledFromVps.length > 0) {
-  fs.writeFileSync(LOCAL_PATH, JSON.stringify(local, null, 2));
+  fs.writeFileSync(LOCAL_PATH, JSON.stringify(groupConfig(local), null, 2));
   console.log(`    Filled ${filledFromVps.length} key(s) missing locally, from the VPS copy: ${filledFromVps.join(", ")}`);
 } else {
   console.log("    No gaps — local already has every key the VPS copy has.");

@@ -12,6 +12,7 @@
 
 import { loadEnv } from "../util/envcrypt.js";
 import { repoPath } from "../repo-root.js";
+import { flattenConfig } from "../core/config-groups.js";
 import fs from "fs";
 
 loadEnv();
@@ -23,7 +24,10 @@ if (!isSupabaseConfigEnabled()) {
   process.exit(1);
 }
 
-const local = JSON.parse(fs.readFileSync(repoPath("user-config.json"), "utf8"));
+// user-config.json is stored grouped on disk; flatten for this dry-run
+// listing/secret-scan so it reports actual leaf keys, not group names.
+// The real push (pushSupabaseConfig, below) does its own flattening.
+const local = flattenConfig(JSON.parse(fs.readFileSync(repoPath("user-config.json"), "utf8")));
 const keys = Object.keys(local).filter((k) => !k.startsWith("_"));
 
 // Secrets live in this file too — make the operator see that before publishing.

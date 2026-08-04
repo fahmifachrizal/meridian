@@ -1,6 +1,7 @@
 import fs from "fs";
 import { log } from "../logger.js";
 import { repoPath } from "../repo-root.js";
+import { flattenConfig, groupConfig } from "../core/config-groups.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 
@@ -33,7 +34,7 @@ function resolveChatId() {
   let fromConfig = null;
   try {
     if (fs.existsSync(USER_CONFIG_PATH)) {
-      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      const cfg = flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")));
       fromConfig = nonEmptyChatId(cfg.telegramChatId);
     }
   } catch (error) {
@@ -51,7 +52,7 @@ function resolveTopicId() {
   let fromConfig = null;
   try {
     if (fs.existsSync(USER_CONFIG_PATH)) {
-      const cfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      const cfg = flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")));
       fromConfig = nonEmptyChatId(cfg.telegramTopicId);
     }
   } catch { /* resolveChatId already logs invalid-config warnings */ }
@@ -67,10 +68,10 @@ function loadChatId() {
 function saveChatId(id) {
   try {
     let cfg = fs.existsSync(USER_CONFIG_PATH)
-      ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
+      ? flattenConfig(JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")))
       : {};
     cfg.telegramChatId = id;
-    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(groupConfig(cfg), null, 2));
   } catch (e) {
     log("telegram_error", `Failed to persist chatId: ${e.message}`);
   }
