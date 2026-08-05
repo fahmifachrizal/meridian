@@ -8,10 +8,11 @@ import { log } from "../logger.js";
  * post-recon hard-filter loop (after guards #1/#2 have already run in
  * tools/screening.js).
  *
- * A pool rejected ≥N times recently for bot-holders%/top10% gets a
- * tightened (harder) cutoff so it can't slip through the instant a metric
- * dips just under the raw cutoff. Checks bot-holders% first, then top10%;
- * returns on the first that trips (matching the original inline order).
+ * A pool rejected ≥N times recently for top10% gets a tightened (harder)
+ * cutoff so it can't slip through the instant the metric dips just under
+ * the raw cutoff. bot-holders% is checked first but deliberately does NOT
+ * get this treatment (operator decision) — it always uses the raw
+ * maxBotHoldersPct cutoff from config, no hysteresis tightening, ever.
  */
 export function checkRejectionHysteresis(pool, ti, screeningConfig) {
   const botPct = ti?.audit?.bot_holders_pct;
@@ -22,15 +23,10 @@ export function checkRejectionHysteresis(pool, ti, screeningConfig) {
   const hysteresisWindow = screeningConfig.hysteresisWindowHours ?? 24;
   const hysteresisMargin = screeningConfig.hysteresisMarginPct ?? 5;
 
-  if (botPct != null && maxBotHoldersPct != null) {
-    const priorRejections = getRecentRejectionCount(pool.pool, "bot_holders_pct", hysteresisWindow);
-    const effectiveCap = priorRejections >= hysteresisCount ? maxBotHoldersPct - hysteresisMargin : maxBotHoldersPct;
-    if (botPct > effectiveCap) {
-      const marginNote = priorRejections >= hysteresisCount ? ` (hysteresis: ${priorRejections} recent rejections, cap tightened by ${hysteresisMargin}%)` : "";
-      log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${effectiveCap}%${marginNote}`);
-      recordRejection(pool.pool, "bot_holders_pct", botPct);
-      return { blocked: true, reason: `bot holders ${botPct}% > ${effectiveCap}%${marginNote}` };
-    }
+  // No hysteresis for bot-holders% — always the raw config value, as-is.
+  if (botPct != null && maxBotHoldersPct != null && botPct > maxBotHoldersPct) {
+    log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${maxBotHoldersPct}%`);
+    return { blocked: true, reason: `bot holders ${botPct}% > ${maxBotHoldersPct}%` };
   }
   if (top10Pct != null && maxTop10Pct != null) {
     const priorRejections = getRecentRejectionCount(pool.pool, "top10pct", hysteresisWindow);

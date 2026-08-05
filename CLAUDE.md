@@ -245,20 +245,18 @@ Detects Slow/Normal/Hot from the current screening cycle's candidates and adjust
 - `noteScreeningResult(deployed)` runs after **every** screening outcome (all 4 no-deploy exit points + the success path). `recordScreeningOutcome({deployed})` increments/resets a persisted fail counter.
 - After `config.regime.relaxAfterFails` (default 3) consecutive no-deploy cycles with `activeId !== "normal"`: force-relax to `normal` via the same `applyRegimeOverlay()` path, then `noteRegimeRelax(activeId, suppressMinutes * 60_000)` — zeroes the counter AND suppresses re-entry into `activeId` for `config.regime.suppressMinutes` (default 120min). Other regimes stay reachable; only the one just left is blocked, so this can't freeze adaptation, only break the specific tighten→starve→relax→re-tighten loop.
 
-**`regime-overlay.js`'s `REGIME_TUNABLE`** is the exhaustive whitelist — nothing outside these 8 keys is regime-tunable, and `maxPositions`/`maxDeployAmount` are deliberately absent (portfolio ceilings stay 100% operator-owned):
+**`regime-overlay.js`'s `REGIME_TUNABLE`** is the exhaustive whitelist — nothing outside these 4 keys is regime-tunable. `maxPositions`/`maxDeployAmount` are deliberately absent (portfolio ceilings stay 100% operator-owned), and — by explicit operator decision — so are `minFeeActiveTvlRatio`, `positionSizePct`, `stopLossPct`, and `takeProfitPct`. Regime affects screening bars only (`minTvl`, `minVolume`, `minOrganic`) plus exactly one risk key (`deployAmountSol`); nothing about position sizing beyond `deployAmountSol` or exit rules is ever touched by regime:
 
-| Key | Kind | Mode | slow factor | hot factor | Bound |
-|---|---|---|---|---|---|
-| `minTvl` | screening | mult | 0.7 | 1.5 | relative 0.5–3.0× baseline |
-| `minVolume` | screening | mult | 0.6 | 1.5 | relative 0.4–3.0× baseline |
-| `minFeeActiveTvlRatio` | screening | mult | 0.6 | 1.6 | relative 0.4–3.0× baseline |
-| `minOrganic` | screening | delta | −6 | +6 | absolute 40–95 |
-| `deployAmountSol` | risk, **ratchet: down** | mult | 0.85 | 0.6 | absolute 0.05–50, never > baseline |
-| `positionSizePct` | risk, **ratchet: down** | mult | 0.85 | 0.6 | absolute 0.05–0.9, never > baseline |
-| `stopLossPct` | risk, **ratchet: up** | mult | 0.7 | 0.8 | absolute −60 to −1, never looser than baseline |
-| `takeProfitPct` | risk, unratcheted | mult | 0.8 | 1.4 | absolute 1–50 |
+| Key | Kind | Mode | slow factor | normal factor | hot factor | Bound |
+|---|---|---|---|---|---|---|
+| `minTvl` | screening | mult | 0.7 | — (no-op) | 1.5 | relative 0.5–3.0× baseline |
+| `minVolume` | screening | mult | 0.6 | — (no-op) | 1.5 | relative 0.4–3.0× baseline |
+| `minOrganic` | screening | delta | −6 | — (no-op) | +6 | absolute 40–95 |
+| `deployAmountSol` | risk, **ratchet: down** | mult | 0.70 | **0.85** | 1.00 | absolute 0.05–50, never > baseline |
 
-The ratchet is applied **last**, after every other clamp, so it always wins — even a pathological baseline can't produce an overlay that authorizes more risk than the operator set. `normal` always returns `{}` (exact no-op; baseline stands). Unknown/null regime id also returns `{}` (fails safe).
+The ratchet is applied **last**, after every other clamp, so it always wins — even a pathological baseline can't produce an overlay that authorizes more risk than the operator set. `normal` returns `{}` for any key with no explicit `normal:` factor (exact no-op; baseline stands) — of the 4 keys above, only `deployAmountSol` opts in to its own three-way sizing policy (full size in hot, 85% in normal, 70% in slow/cool — a deliberate operator choice, not the "size down when volatile" pattern a risk key would default to). This also closes a real gap the old blanket-normal-is-always-{} rule had: since `computeRegimeOverlay` is called on every regime *transition* (including transitions *into* normal), a key with no `normal:` factor simply keeps whatever a prior hot/slow overlay last set it to — there is no periodic correction back to baseline for such a key short of a Supabase pull (screening keys only, via `reloadScreeningThresholds()`) or a full process restart. `deployAmountSol` doesn't have this gap because every transition, including into normal, now computes it fresh from baseline. Unknown/null regime id still returns `{}` (fails safe) for every key.
+
+`minFeeActiveTvlRatio`, `positionSizePct`, `stopLossPct`, and `takeProfitPct` were regime-tunable in an earlier version of this system (with slow/hot factors and, for the risk keys, a ratchet) — removed by explicit operator decision so regime can never touch deploy sizing beyond `deployAmountSol` or any exit rule. If you're tempted to re-add one of them: don't, unless the operator asks — this was a deliberate scope narrowing, not an oversight.
 
 **Adding a new regime-tunable key**: add it to `REGIME_TUNABLE` with a real `CONFIG_MAP` entry (checked by `test:regime-overlay`'s whitelist-integrity test), decide `mode` (`mult` for proportional, `delta` for additive), pick `slow`/`hot` factors, and — critically — decide whether it needs `ratchet: "down"`/`"up"` (anything that changes loss exposure should be ratcheted; anything that doesn't, like `takeProfitPct`, doesn't need to be).
 
@@ -564,6 +562,7 @@ positions, not live re-screening.
 ## Known issues / tech debt (verified by reading the code)
 
 - **`lessons.js evolveThresholds()`** evolves `minOrganic` and `minFeeActiveTvlRatio` only.
+- **A key with no `normal:` factor never self-corrects back to baseline on its own** — `applyRegimeOverlay()` only runs on a regime *transition* (`index.js`, `regime !== prevRegime`), and a key with no explicit `normal:` factor produces no overlay entry when transitioning into normal (see `regime-overlay.js`'s `REGIME_TUNABLE` table), so it silently keeps whatever value a *prior* hot/slow overlay last set until a Supabase pull (screening keys, via `reloadScreeningThresholds()`, ~every 15min) or a full process restart. This used to also bite `positionSizePct`, `stopLossPct`, and `takeProfitPct` — they were removed from `REGIME_TUNABLE` entirely (operator decision: regime should never touch deploy sizing beyond `deployAmountSol` or any exit rule), so the gap can't manifest for them anymore since regime never sets them in the first place. `deployAmountSol` (the one risk key still tunable) was fixed the other way — it defines an explicit `normal:` factor, so every transition, including into normal, recomputes it fresh from baseline. If you ever add a new regime-tunable risk key, give it either an explicit `normal:` factor or accept it inherits this same staleness risk.
 - **`get_wallet_positions` tool** is in `definitions.js` and wired in `executor.js`, but not in `MANAGER_TOOLS`/`SCREENER_TOOLS`. Only `INTENT_TOOLS.balance` / `INTENT_TOOLS.positions` expose it to GENERAL.
 - **Lazy SDK load** (`tools/dlmm.js:33`) — `@meteora-ag/dlmm` is dynamic-imported on first on-chain call to avoid CJS-import crash on Node 24 (the `postinstall` `patch-anchor.js` handles another piece of this). Don't `import` it eagerly at top of file.
 - **Position cache** (`_positionsCache` 5min TTL) — in single-process mode it's a perf win, but the cache is invalidated by `_positionsCacheAt = 0` after every deploy/close, and the executor's `deploy_position` safety check uses `force: true` for a fresh count.

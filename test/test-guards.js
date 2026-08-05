@@ -8,6 +8,7 @@
 import { repoPath } from "../repo-root.js";
 import { createSuite, withRestoredFile } from "./lib/test-kit.js";
 import { getTokenAgeWindowRejectReason } from "../guards/01-token-age-window.js";
+import { checkRejectionHysteresis } from "../guards/03-rejection-hysteresis.js";
 import {
   recordRejection,
   getRecentRejectionCount,
@@ -59,15 +60,29 @@ withRestoredFile(POOL_MEMORY_FILE, () => {
   check("2 same-reason rejections counted", getRecentRejectionCount(FAKE_POOL_HYSTERESIS, "bot_holders_pct", 24) === 2);
   check("different reason key not counted", getRecentRejectionCount(FAKE_POOL_HYSTERESIS, "top10pct", 24) === 0);
 
-  // Simulate the exact SalaryCat pattern: 2 rejections, then a pass at 34%
-  // (below raw 35% cap) — with hysteresis (count>=2, margin=5) the effective
-  // cap tightens to 30%, so 34% should still be treated as a rejection.
-  const maxBotHoldersPct = 35;
-  const hysteresisMargin = 5;
-  const priorRejections = getRecentRejectionCount(FAKE_POOL_HYSTERESIS, "bot_holders_pct", 24);
-  const effectiveCap = priorRejections >= 2 ? maxBotHoldersPct - hysteresisMargin : maxBotHoldersPct;
-  check("effective cap tightened to 30% after 2 rejections", effectiveCap === 30);
-  check("34% still rejected under tightened cap", 34 > effectiveCap);
+  // The SalaryCat-era pattern (2 rejections tightening a 35% cap to 30%,
+  // catching a 34% pass) now applies to top10pct ONLY — bot-holders%
+  // deliberately never gets this tightening (operator decision), see below.
+  // getRecentRejectionCount/recordRejection stay generic, reason-agnostic
+  // storage primitives (used here to confirm they still work for any
+  // reasonKey); the behavior difference lives entirely in the guard itself.
+  const screeningConfig = { maxBotHoldersPct: 35, maxTop10Pct: 35, hysteresisRejectionCount: 2, hysteresisWindowHours: 24, hysteresisMarginPct: 5 };
+  const fakePool = { pool: FAKE_POOL_HYSTERESIS, name: "TEST_POOL" };
+
+  // Bot-holders: 2 prior rejections already recorded above, but the raw cap
+  // must still apply, un-tightened — 34% is BELOW the raw 35% cap, so it
+  // should pass clean, not get caught by a phantom tightened cap.
+  const botResult = checkRejectionHysteresis(fakePool, { audit: { bot_holders_pct: 34 } }, screeningConfig);
+  check("bot-holders 34% passes at the raw (untightened) 35% cap despite 2 prior rejections", botResult.blocked === false);
+  const botResultOverRaw = checkRejectionHysteresis(fakePool, { audit: { bot_holders_pct: 36 } }, screeningConfig);
+  check("bot-holders 36% still blocked by the raw 35% cap itself (not hysteresis)", botResultOverRaw.blocked === true && !botResultOverRaw.reason.includes("hysteresis"));
+
+  // top10pct: hysteresis is still live — 2 prior rejections tighten 35%→30%,
+  // so a 34% pass (under the raw cap) should still be caught.
+  recordRejection(FAKE_POOL_HYSTERESIS, "top10pct", 36);
+  recordRejection(FAKE_POOL_HYSTERESIS, "top10pct", 38);
+  const top10Result = checkRejectionHysteresis(fakePool, { audit: { top_holders_pct: 34 } }, screeningConfig);
+  check("top10pct 34% still caught by the tightened 30% cap after 2 prior rejections", top10Result.blocked === true && top10Result.reason.includes("hysteresis"));
 
   section("Guard #4: TVL/mcap decline check");
   check("no observation yet — fails open", getPriorTvlObservation(FAKE_POOL_TVL, 4) === null);
