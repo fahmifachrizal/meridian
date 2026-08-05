@@ -21,13 +21,21 @@
  *     source of truth and is pull-only for the agent.
  *
  * Direction of travel (the "first principle" encoded):
- *   hot / volatile → TIGHTEN screening (plenty of choice, be picky),
- *                    SIZE DOWN (volatility is where positions go out of range
- *                    and losses compound).
- *   slow           → LOOSEN screening (scarce choice, accept thinner pools),
- *                    size slightly down and take profit earlier (low fee yield
- *                    means there is less to wait for).
- *   normal         → exact baseline, no overlay at all.
+ *   hot / volatile → TIGHTEN screening (plenty of choice, be picky).
+ *   slow           → LOOSEN screening (scarce choice, accept thinner pools).
+ *   normal         → exact baseline for every key EXCEPT ones that opt in to
+ *                    their own explicit `normal:` factor (currently just
+ *                    deployAmountSol — see REGIME_TUNABLE below). A key with
+ *                    no `normal:` factor is untouched when regime is normal,
+ *                    same as before.
+ *
+ * Scope, by deliberate operator choice: regime changes affect SCREENING bars
+ * only (minTvl, minVolume, minOrganic — NOT minFeeActiveTvlRatio, which stays
+ * fully operator-owned) plus exactly one risk key, deployAmountSol, which has
+ * its own explicit hot/normal/slow sizing policy. Nothing else about how a
+ * position is deployed or managed (positionSizePct, stopLossPct,
+ * takeProfitPct) is regime-tunable — those stay 100% at whatever the
+ * operator set in user-config.json, unconditionally.
  */
 
 import fs from "fs";
@@ -45,19 +53,26 @@ const DELTA = "delta";
  */
 export const REGIME_TUNABLE = {
   // ── screening bars: may move BOTH ways, inside relative clamps ──
+  // minFeeActiveTvlRatio is deliberately NOT here — operator-owned,
+  // unconditionally, regardless of regime.
   minTvl:               { kind: "screening", mode: MULT,  hot: 1.5, slow: 0.7,  floorPct: 0.5, ceilPct: 3.0 },
   minVolume:            { kind: "screening", mode: MULT,  hot: 1.5, slow: 0.6,  floorPct: 0.4, ceilPct: 3.0 },
-  minFeeActiveTvlRatio: { kind: "screening", mode: MULT,  hot: 1.6, slow: 0.6,  floorPct: 0.4, ceilPct: 3.0 },
   minOrganic:           { kind: "screening", mode: DELTA, hot: 6,   slow: -6,   min: 40,       max: 95 },
 
   // ── risk: RATCHETED — never more exposure than baseline ──
-  deployAmountSol:      { kind: "risk", mode: MULT, hot: 0.6,  slow: 0.85, min: 0.05, max: 50, ratchet: "down" },
-  positionSizePct:      { kind: "risk", mode: MULT, hot: 0.6,  slow: 0.85, min: 0.05, max: 0.9, ratchet: "down" },
-  // stopLossPct is negative: shrinking magnitude = tighter = safer.
-  stopLossPct:          { kind: "risk", mode: MULT, hot: 0.8,  slow: 0.7,  min: -60, max: -1,  ratchet: "up" },
-  // takeProfitPct does not create loss exposure, so it is unratcheted:
-  // let winners run when the market is actually moving, bank earlier when not.
-  takeProfitPct:        { kind: "risk", mode: MULT, hot: 1.4,  slow: 0.8,  min: 1,   max: 50 },
+  // deployAmountSol is the ONLY deploy/management key regime is allowed to
+  // touch. It explicitly defines all three regime factors (including
+  // `normal:`) rather than relying on the "normal = untouched" default —
+  // see computeRegimeOverlay: a key with no `normal:` factor stays a no-op
+  // in the normal regime. This one opts out of that default deliberately,
+  // per the operator's own sizing policy: full size in hot, 85% in normal,
+  // 70% in slow/cool.
+  //
+  // positionSizePct, stopLossPct, and takeProfitPct are deliberately NOT
+  // here (removed by operator choice) — regime never touches how a position
+  // is sized (beyond deployAmountSol) or exited. They stay exactly what the
+  // operator set, unconditionally, in every regime.
+  deployAmountSol:      { kind: "risk", mode: MULT, hot: 1.0, normal: 0.85, slow: 0.70, min: 0.05, max: 50, ratchet: "down" },
 };
 
 export const RISK_KEYS = Object.keys(REGIME_TUNABLE).filter((k) => REGIME_TUNABLE[k].kind === "risk");
@@ -73,11 +88,18 @@ function clamp(value, lo, hi) {
  * Compute the config overlay for a regime, derived from `baseline`.
  *
  * Pure: reads `baseline`, mutates nothing, touches no files. Returns a flat
- * map of CONFIG_MAP keys → values. "normal", an unknown id, or a null id all
- * return {} (fail safe — no overlay means the operator's baseline stands).
+ * map of CONFIG_MAP keys → values. An unknown id or a null id return {}
+ * (fail safe — no overlay means the operator's baseline stands). "normal"
+ * is NOT special-cased here — it goes through the same per-key loop as
+ * hot/slow. Each rule in REGIME_TUNABLE only fires for "normal" if it
+ * explicitly defines a `normal:` factor (checked below); every existing key
+ * except deployAmountSol has no such factor, so `factor === undefined` skips
+ * them exactly as the old blanket "normal → {}" shortcut did. This is what
+ * lets deployAmountSol opt in to an explicit normal-regime value instead of
+ * silently inheriting whatever a PRIOR hot/slow overlay last left it at.
  */
 export function computeRegimeOverlay(regimeId, baseline) {
-  if (!regimeId || regimeId === "normal" || !KNOWN_REGIMES.has(regimeId)) return {};
+  if (!regimeId || !KNOWN_REGIMES.has(regimeId)) return {};
   if (!baseline || typeof baseline !== "object") return {};
 
   const overlay = {};
@@ -86,7 +108,7 @@ export function computeRegimeOverlay(regimeId, baseline) {
     if (!Number.isFinite(base)) continue; // key absent from baseline — skip it
 
     const factor = rule[regimeId];
-    if (factor === undefined) continue;
+    if (factor === undefined) continue; // this rule has no factor for this regime — untouched (the "normal is a no-op" default, for keys that don't opt out of it)
 
     let value = rule.mode === DELTA ? base + factor : base * factor;
 

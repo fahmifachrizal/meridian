@@ -29,12 +29,18 @@ const suite = createSuite("QA protocol — bounded regime overlay");
 const { section, check } = suite;
 
 // A representative baseline — stands in for the user's Supabase ideal.
+// Includes a couple of non-tunable keys (minFeeActiveTvlRatio,
+// positionSizePct, stopLossPct, takeProfitPct) deliberately, so the tests
+// below can assert the overlay never touches them, not just that it CAN'T
+// (they're not even in REGIME_TUNABLE) but that a baseline containing them
+// doesn't accidentally leak them into an overlay some other way.
 const BASELINE = {
   minTvl: 10000,
   minVolume: 1000,
-  minFeeActiveTvlRatio: 0.05,
   minOrganic: 60,
   deployAmountSol: 0.6,
+  // Present in baseline, but intentionally NOT regime-tunable:
+  minFeeActiveTvlRatio: 0.05,
   positionSizePct: 0.35,
   stopLossPct: -15,
   takeProfitPct: 5,
@@ -62,20 +68,58 @@ section("Tunable whitelist integrity");
     "maxDeployAmount is NOT tunable (hard ceiling stays user-owned)",
     !tunableKeys.includes("maxDeployAmount"),
   );
+  check(
+    "minFeeActiveTvlRatio is NOT tunable (operator-owned, unconditionally)",
+    !tunableKeys.includes("minFeeActiveTvlRatio"),
+  );
+  check(
+    "positionSizePct is NOT tunable (deploy sizing beyond deployAmountSol stays operator-owned)",
+    !tunableKeys.includes("positionSizePct"),
+  );
+  check(
+    "stopLossPct is NOT tunable (exit rules stay operator-owned)",
+    !tunableKeys.includes("stopLossPct"),
+  );
+  check(
+    "takeProfitPct is NOT tunable (exit rules stay operator-owned)",
+    !tunableKeys.includes("takeProfitPct"),
+  );
+  check(
+    "deployAmountSol is the ONLY tunable risk key",
+    RISK_KEYS.length === 1 && RISK_KEYS[0] === "deployAmountSol",
+  );
 }
 
-// ─── 2. normal == baseline, exactly ──────────────────────────────
-section("normal regime is a true no-op");
+// ─── 2. normal == baseline, exactly — EXCEPT keys that opt in ────
+section("normal regime is a no-op for every key except explicit opt-ins");
 {
   const overlay = computeRegimeOverlay("normal", BASELINE);
-  check("normal produces an empty overlay", Object.keys(overlay).length === 0);
+  const nonOptIns = Object.keys(overlay).filter((k) => k !== "deployAmountSol");
+  check("normal produces no overlay for keys without an explicit normal: factor", nonOptIns.length === 0);
+  check("deployAmountSol DOES opt in to a normal-regime factor", overlay.deployAmountSol !== undefined);
+}
+
+// ─── 2b. deployAmountSol's explicit 3-way regime sizing ──────────
+// Operator policy: full size in hot, 85% in normal, 70% in slow/cool —
+// deliberately inverted from the old "size down when volatile" default,
+// see REGIME_TUNABLE's comment on this key for why.
+section("deployAmountSol — explicit hot/normal/slow sizing factors");
+{
+  const hot = computeRegimeOverlay("hot", BASELINE);
+  const normal = computeRegimeOverlay("normal", BASELINE);
+  const slow = computeRegimeOverlay("slow", BASELINE);
+
+  check("hot = 100% of baseline", hot.deployAmountSol === BASELINE.deployAmountSol);
+  check("normal = 85% of baseline", Math.abs(normal.deployAmountSol - BASELINE.deployAmountSol * 0.85) < 1e-9);
+  check("slow = 70% of baseline", Math.abs(slow.deployAmountSol - BASELINE.deployAmountSol * 0.70) < 1e-9);
+  check("hot > normal > slow (monotonic across regimes)", hot.deployAmountSol > normal.deployAmountSol && normal.deployAmountSol > slow.deployAmountSol);
 }
 
 // ─── 3. THE RISK RATCHET ─────────────────────────────────────────
 // The single most important invariant: no regime, ever, may increase
 // risk exposure above the user's baseline.
 section("Risk ratchet — no regime may ever increase exposure");
-for (const regime of ["slow", "hot"]) {
+for (const regime of ["slow", "normal", "hot"]) {
   const o = computeRegimeOverlay(regime, BASELINE);
 
   check(
@@ -83,21 +127,27 @@ for (const regime of ["slow", "hot"]) {
     (o.deployAmountSol ?? BASELINE.deployAmountSol) <= BASELINE.deployAmountSol,
   );
   check(
-    `${regime}: positionSizePct never exceeds baseline`,
-    (o.positionSizePct ?? BASELINE.positionSizePct) <= BASELINE.positionSizePct,
-  );
-  // stopLossPct is negative; "looser" means MORE negative. Never allowed.
-  check(
-    `${regime}: stopLossPct never looser (more negative) than baseline`,
-    (o.stopLossPct ?? BASELINE.stopLossPct) >= BASELINE.stopLossPct,
-  );
-  check(
     `${regime}: deployAmountSol stays positive`,
     (o.deployAmountSol ?? BASELINE.deployAmountSol) > 0,
   );
+  // Regression guard for the scoped-down whitelist: none of these four keys
+  // should EVER appear in an overlay, in any regime, even though the
+  // baseline object above carries values for them.
   check(
-    `${regime}: positionSizePct stays positive`,
-    (o.positionSizePct ?? BASELINE.positionSizePct) > 0,
+    `${regime}: minFeeActiveTvlRatio never appears in the overlay`,
+    o.minFeeActiveTvlRatio === undefined,
+  );
+  check(
+    `${regime}: positionSizePct never appears in the overlay`,
+    o.positionSizePct === undefined,
+  );
+  check(
+    `${regime}: stopLossPct never appears in the overlay`,
+    o.stopLossPct === undefined,
+  );
+  check(
+    `${regime}: takeProfitPct never appears in the overlay`,
+    o.takeProfitPct === undefined,
   );
 }
 
@@ -109,22 +159,20 @@ section("Directional semantics — hot tightens, slow loosens (screening)");
   const slow = computeRegimeOverlay("slow", BASELINE);
 
   check("hot raises minTvl (demand deeper liquidity)", hot.minTvl > BASELINE.minTvl);
-  check("hot raises minFeeActiveTvlRatio (demand real fee yield)", hot.minFeeActiveTvlRatio > BASELINE.minFeeActiveTvlRatio);
   check("hot raises minOrganic (demand cleaner holders)", hot.minOrganic > BASELINE.minOrganic);
 
   check("slow lowers minTvl (accept thinner pools)", slow.minTvl < BASELINE.minTvl);
-  check("slow lowers minFeeActiveTvlRatio", slow.minFeeActiveTvlRatio < BASELINE.minFeeActiveTvlRatio);
   check("slow lowers minOrganic", slow.minOrganic < BASELINE.minOrganic);
 
-  // The volatile market is where the SalaryCat-style loss happened: size down.
-  check("hot sizes DOWN vs slow (volatility = smaller bets)", hot.positionSizePct < slow.positionSizePct);
+  // deployAmountSol's own policy (not "size down when volatile" — see section 2b):
+  check("hot sizes deployAmountSol UP vs slow (full size in hot, per operator policy)", hot.deployAmountSol > slow.deployAmountSol);
 }
 
 // ─── 5. Clamps — no overshoot in either direction ────────────────
 section("Clamps hold against absurd baselines");
 {
-  const tiny = { ...BASELINE, minTvl: 1, minVolume: 1, minOrganic: 1, positionSizePct: 0.01, deployAmountSol: 0.01 };
-  const huge = { ...BASELINE, minTvl: 10_000_000, minVolume: 10_000_000, minOrganic: 99, positionSizePct: 0.99, deployAmountSol: 40 };
+  const tiny = { ...BASELINE, minTvl: 1, minVolume: 1, minOrganic: 1, deployAmountSol: 0.01 };
+  const huge = { ...BASELINE, minTvl: 10_000_000, minVolume: 10_000_000, minOrganic: 99, deployAmountSol: 40 };
 
   for (const [label, base] of [["tiny", tiny], ["huge", huge]]) {
     for (const regime of ["slow", "hot"]) {
@@ -137,8 +185,7 @@ section("Clamps hold against absurd baselines");
       );
       check(
         `${label}/${regime}: risk ratchet still holds`,
-        (o.deployAmountSol ?? base.deployAmountSol) <= base.deployAmountSol &&
-          (o.positionSizePct ?? base.positionSizePct) <= base.positionSizePct,
+        (o.deployAmountSol ?? base.deployAmountSol) <= base.deployAmountSol,
       );
     }
   }
