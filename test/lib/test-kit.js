@@ -12,6 +12,7 @@
  */
 
 import fs from "fs";
+import { invalidateCache } from "../../state/json-store.js";
 
 export function createSuite(title) {
   let failures = 0;
@@ -48,6 +49,11 @@ export function createSuite(title) {
  */
 export function withRestoredFile(filePath, fn) {
   const before = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : null;
+  // state/json-store.js caches parsed JSON keyed by mtime+size. Restoring a
+  // file behind its back can produce a same-size, same-millisecond write that
+  // the cache would not notice, so invalidate explicitly rather than relying
+  // on filesystem timestamp granularity.
+  invalidateCache(filePath);
   try {
     return fn();
   } finally {
@@ -56,6 +62,7 @@ export function withRestoredFile(filePath, fn) {
     } else {
       fs.writeFileSync(filePath, before);
     }
+    invalidateCache(filePath);
   }
 }
 
