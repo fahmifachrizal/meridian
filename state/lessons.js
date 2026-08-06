@@ -11,6 +11,7 @@ import { log } from "../logger.js";
 import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "../integrations/hivemind.js";
 import { repoPath } from "../repo-root.js";
 import { loadCached, saveJson } from "./json-store.js";
+import { archiveAppend } from "./archive.js";
 import { shouldPinAvoid } from "../guards/07-avoid-pin.js";
 import { flattenConfig, groupConfig } from "../core/config-groups.js";
 
@@ -149,7 +150,9 @@ export async function recordPerformance(perf) {
   }
 
   save(data);
+  archiveAppend("performance", entry);
   if (lesson) {
+    archiveAppend("lessons", lesson);
     void pushHiveLesson(lesson);
   }
 
@@ -527,6 +530,7 @@ export function addLesson(rule, tags = [], { pinned = false, role = null } = {})
   };
   data.lessons.push(lesson);
   save(data);
+  archiveAppend("lessons", lesson);
   log("lessons", `Manual lesson added${pinned ? " [PINNED]" : ""}${role ? ` [${role}]` : ""}: ${safeRule}`);
   void pushHiveLesson(lesson);
 }

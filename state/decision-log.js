@@ -1,5 +1,6 @@
 import { repoPath } from "../repo-root.js";
 import { loadCached, saveJson } from "./json-store.js";
+import { archiveAppend } from "./archive.js";
 
 const DECISION_LOG_FILE = repoPath("decision-log.json");
 const MAX_DECISIONS = 100;
@@ -34,8 +35,12 @@ export function appendDecision(entry) {
     rejected: Array.isArray(entry.rejected) ? entry.rejected.map((r) => sanitize(r, 180)).filter(Boolean).slice(0, 8) : [],
   };
   data.decisions.unshift(decision);
+  // The active file stays capped — readers only ever ask for the most recent
+  // 6-10. The archive is what retains full history, since this cap alone
+  // discards roughly a day's worth of decisions every day.
   data.decisions = data.decisions.slice(0, MAX_DECISIONS);
   save(data);
+  archiveAppend("decisions", decision);
   return decision;
 }
 

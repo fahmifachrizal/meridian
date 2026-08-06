@@ -11,6 +11,7 @@
 import { log } from "../logger.js";
 import { repoPath } from "../repo-root.js";
 import { loadCached, saveJson } from "./json-store.js";
+import { archiveAppend } from "./archive.js";
 
 const STATE_FILE = repoPath("state.json");
 
@@ -183,6 +184,10 @@ export function recordClose(position_address, reason) {
   pos.notes.push(`Closed at ${pos.closed_at}: ${reason}`);
   pushEvent(state, { action: "close", position: position_address, pool_name: pos.pool_name || pos.pool, reason });
   save(state);
+  // Archive the full closed record before retention ever prunes it out of
+  // the active file — this is the only place the complete position lifecycle
+  // (deploy params, claims, notes, OOR history) is preserved.
+  archiveAppend("positions", { position: position_address, ...pos });
   log("state", `Position ${position_address} marked closed: ${reason}`);
 }
 
