@@ -25,8 +25,8 @@ import {
   isEnabled as telegramEnabled,
   createLiveMessage,
   escapeHtml,
-  htmlTable,
 } from "./integrations/telegram.js";
+import { noDeployReport, positionBlock } from "./integrations/telegram-format.js";
 import { generateBriefing } from "./integrations/briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state/state.js";
 import { getActiveStrategy } from "./state/strategy-library.js";
@@ -314,34 +314,21 @@ export async function runManagementCycle({ silent = false } = {}) {
     const totalValue = positionData.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
     const totalUnclaimed = positionData.reduce((s, p) => s + (p.unclaimed_fees_usd ?? 0), 0);
 
-    // Table layout: pool name as an HTML-bold heading, then a monospace
-    // <pre> block with fixed-width labels (Telegram's HTML parse_mode
-    // guarantees <pre> renders as monospace regardless of client/font).
-    const TABLE_LABEL_WIDTH = 11;
-    const tableRow = (label, value) => `${label.padEnd(TABLE_LABEL_WIDTH)}${value}`;
+    // Compact block per position (see telegram-format.js#positionBlock) —
+    // four dense lines instead of a seven-row label/value table. This
+    // previously reimplemented htmlTable inline while the real one sat
+    // unused in telegram.js.
+    const unit = config.management.solMode ? "◎" : "$";
 
     const reportLines = positionData.map((p) => {
       const act = actionMap.get(p.position);
-      const inRange = p.in_range ? "🟢 IN" : `🔴 OOR ${p.minutes_out_of_range ?? 0}m`;
-      const val = config.management.solMode ? `◎${p.total_value_usd ?? "?"}` : `$${p.total_value_usd ?? "?"}`;
-      const unclaimed = config.management.solMode ? `◎${p.unclaimed_fees_usd ?? "?"}` : `$${p.unclaimed_fees_usd ?? "?"}`;
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
 
-      const table = [
-        tableRow("Age", `${p.age_minutes ?? "?"}m`),
-        tableRow("Value", val),
-        tableRow("Unclaimed", unclaimed),
-        tableRow("PnL", `${p.pnl_pct ?? "?"}%`),
-        tableRow("Yield", `${p.fee_per_tvl_24h ?? "?"}%`),
-        tableRow("Status", inRange),
-        tableRow("Action", statusLabel),
-      ].join("\n");
-
-      let line = `<b>${escapeHtml(p.pair)}</b>\n<pre>${escapeHtml(table)}</pre>`;
-      if (p.instruction) line += `\nNote: "${escapeHtml(p.instruction)}"`;
-      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${escapeHtml(act.reason)}`;
-      if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${escapeHtml(act.reason)}`;
-      if (act.action === "CLAIM") line += `\n→ Claiming fees`;
+      let line = positionBlock(p, { unit, action: statusLabel });
+      if (p.instruction) line += `\nnote  ${escapeHtml(p.instruction)}`;
+      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ trailing TP · ${escapeHtml(act.reason)}`;
+      if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nrule ${act.rule} · ${escapeHtml(act.reason)}`;
+      if (act.action === "CLAIM") line += `\n→ claiming fees`;
       return line;
     });
 
@@ -350,9 +337,9 @@ export async function runManagementCycle({ silent = false } = {}) {
       ? needsAction.map(a => a.action === "INSTRUCTION" ? "EVAL instruction" : `${a.action}${a.reason ? ` (${escapeHtml(a.reason)})` : ""}`).join(", ")
       : "no action";
 
-    const cur = config.management.solMode ? "◎" : "$";
+    const cur = unit;
     mgmtReport = reportLines.join("\n\n") +
-      `\n\nSummary: 💼 ${positions.length} positions | ${cur}${totalValue.toFixed(4)} | fees: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
+      `\n\n💼 ${positions.length} pos · ${cur}${totalValue.toFixed(4)} · fees ${cur}${totalUnclaimed.toFixed(4)} · ${actionSummary}`;
 
     // ── Call LLM only if action needed ──────────────────────────────
     const actionPositions = positionData.filter(p => {
@@ -599,9 +586,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const combinedExamples = combined.slice(0, 3)
         .map((entry) => `- ${entry.name}: ${entry.reason}`)
         .join("\n");
-      screenReport = combinedExamples
-        ? `No candidates available.\nFiltered examples:\n${combinedExamples}`
-        : `No candidates available (all filtered by launchpad / holder-quality rules).`;
+      screenReport = noDeployReport({
+        reason: "no candidates survived filtering",
+        rejected: combined.slice(0, 3).map((entry) => `${entry.name} — ${entry.reason}`),
+        html: false,
+      });
       appendDecision({
         type: "no_deploy",
         actor: "SCREENER",
@@ -617,20 +606,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const skipReason = getLoneCandidateSkipReason(passing[0]);
       if (skipReason) {
         const candidateName = passing[0].pool?.name || "unknown";
-        screenReport = [
-          "⛔ NO DEPLOY",
-          "",
-          "Cycle finished with no valid entry.",
-          "",
-          "BEST LOOKING CANDIDATE",
-          candidateName,
-          "",
-          "WHY SKIPPED",
-          `Only one candidate survived filtering, but it was not worth deploying: ${skipReason}.`,
-          "",
-          "REJECTED",
-          `- ${candidateName}: ${skipReason}`,
-        ].join("\n");
+        // Shared with the LLM-prompted template via telegram-format.js so the
+        // two renderings of "no deploy" can no longer drift apart. html:false
+        // because screenReport is escaped wholesale at finalize.
+        screenReport = noDeployReport({
+          best: candidateName,
+          reason: `only candidate, not worth deploying — ${skipReason}`,
+          rejected: [`${candidateName} — ${skipReason}`],
+          html: false,
+        });
         appendDecision({
           type: "no_deploy",
           actor: "SCREENER",
@@ -714,56 +698,40 @@ STEPS:
    pass deploy_position.volatility = the candidate volatility value.
    For single-side SOL deploys, do not invent upside:
    set amount_y only, keep amount_x = 0, keep bins_above = 0, and let the upper bin stay at the active bin.
-4. Report in this exact format (no tables, no extra sections):
+4. Report in this exact format. It is read on a phone: no markdown, no
+   tables, no extra sections, and no line longer than ~60 characters.
    🚀 DEPLOYED
 
    <pool name>
    <pool address>
 
-   ◎ <deploy amount> SOL | <strategy> | bin <active_bin>
-   Range: <minPrice> → <maxPrice>
-   Range cover: <downside %> downside | <upside %> upside | <total width %> total
+   ◎<deploy amount> · <strategy> · bin <active_bin>
+   range <minPrice> → <maxPrice>
+   cover <downside %> down · <upside %> up · <total width %> wide
 
    IMPORTANT:
    - Do NOT calculate the range percentages yourself.
    - Use the actual deploy_position tool result:
-     range_coverage.downside_pct
-     range_coverage.upside_pct
-     range_coverage.width_pct
+     range_coverage.downside_pct / .upside_pct / .width_pct
 
-   MARKET
-   Fee/TVL: <x>%
-   Volume: $<x>
-   TVL: $<x>
-   Volatility: <x>
-   Organic: <x>
-   Mcap: $<x>
-   Age: <x>h
+   market  fee/tvl <x>% · vol $<x> · tvl $<x> · volat <x>
+   token   organic <x> · mcap $<x> · age <x>h
+   audit   top10 <x>% · bots <x>% · fees <x> SOL
+   smart   <names or none>
 
-   AUDIT
-   Top10: <x>%
-   Bots: <x>%
-   Fees paid: <x> SOL
-   Smart wallets: <names or none>
-
-   WHY THIS WON
-   <2-4 concise sentences on why this pool won, key risks, and why it still beat the alternatives>
+   why  <ONE line: the single strongest reason it won, plus the main risk>
 5. If no pool qualifies, report in this exact format instead:
    ⛔ NO DEPLOY
 
-   Cycle finished with no valid entry.
+   best <name or none>
+   why  <ONE line explaining why nothing qualified>
 
-   BEST LOOKING CANDIDATE
-   <name or none>
-
-   WHY SKIPPED
-   <2-4 concise sentences explaining why nothing was good enough>
-
-   REJECTED
-   <short flat list of top candidate names and why they were skipped>
+   rejected
+   • <name> — <reason, a few words>   (at most 3 lines)
 IMPORTANT:
-- Keep the whole report compact and highly scannable for Telegram.
-      `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
+- Compact and scannable beats complete. Prefer " · " separated values on one
+  line over one label per line. Never pad with restatement or summary.
+      `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 1024, {
         onToolStart: async ({ name }) => {
           if (name === "deploy_position") deployAttempted = true;
           await liveMessage?.toolStart(name);
@@ -1805,14 +1773,24 @@ async function telegramHandler(msg) {
     const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
     const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
     const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
-    liveMessage = await createLiveMessage("🤖 Live Update", `Request: ${text.slice(0, 240)}`);
+    // HTML mode, matching the screening/management cycles. This was the only
+    // createLiveMessage caller running in plain-text mode, which is why an
+    // LLM-authored markdown table rendered here as literal pipes.
+    liveMessage = await createLiveMessage(
+      "🤖 <b>Live Update</b>",
+      escapeHtml(`Request: ${text.slice(0, 240)}`),
+      { parseMode: "HTML" },
+    );
     const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, agentModel, null, {
       interactive: true,
       onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
       onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
     });
     appendHistory(text, content);
-    if (liveMessage) await liveMessage.finalize(stripThink(content));
+    // The live message is HTML-mode and the content is LLM-authored plain
+    // text, so it must be escaped wholesale — same contract as the screening
+    // cycle's finalize below.
+    if (liveMessage) await liveMessage.finalize(escapeHtml(stripThink(content)));
     else await sendMessage(stripThink(content));
   } catch (e) {
     if (liveMessage) await liveMessage.fail(e.message).catch(() => {});

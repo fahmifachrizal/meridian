@@ -170,7 +170,7 @@ async function postTelegramRaw(method, body) {
 export async function sendMessage(text, { parseMode } = {}) {
   if (!TOKEN || !chatId) return;
   return postTelegram("sendMessage", {
-    text: String(text).slice(0, 4096),
+    text: safeTruncate(String(text)),
     ...(parseMode ? { parse_mode: parseMode } : {}),
   });
 }
@@ -180,24 +180,94 @@ export function escapeHtml(text) {
   return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+export const TELEGRAM_LIMIT = 4096;
+
+// Tags this repo actually emits; anything else is escaped before it gets here.
+const KNOWN_TAGS = ["b", "i", "u", "s", "code", "pre", "a"];
+
+/**
+ * Truncate to Telegram's limit WITHOUT leaving an unclosed tag.
+ *
+ * Every send/edit path used to do a bare `.slice(0, 4096)`. A cut landing
+ * inside <pre> or <b> makes Telegram reject the whole message with a 400,
+ * which postTelegram swallows into a log line — so the update silently
+ * vanished instead of arriving truncated. This cuts on a tag boundary (and
+ * outside HTML entities) then closes whatever is still open.
+ *
+ * Lives here rather than in telegram-format.js so the dependency runs one
+ * way: transport primitives here, presentation there.
+ */
+export function safeTruncate(html, limit = TELEGRAM_LIMIT) {
+  const text = String(html ?? "");
+  if (text.length <= limit) return text;
+
+  const ellipsis = "\n…";
+
+  // Which tags are still open at a given cut point, innermost last.
+  const openAt = (slice) => {
+    const open = [];
+    const tagRe = /<(\/?)([a-zA-Z]+)(?:\s[^>]*)?>/g;
+    let m;
+    while ((m = tagRe.exec(slice)) !== null) {
+      const [, slash, rawName] = m;
+      const name = rawName.toLowerCase();
+      if (!KNOWN_TAGS.includes(name)) continue;
+      if (slash) {
+        const idx = open.lastIndexOf(name);
+        if (idx !== -1) open.splice(idx, 1);
+      } else {
+        open.push(name);
+      }
+    }
+    return open;
+  };
+
+  const adjust = (cut) => {
+    // Never cut inside a tag: back up past a dangling "<...".
+    // Search below `cut` because slice(0, cut) excludes index `cut` itself.
+    const lastOpen = text.lastIndexOf("<", cut - 1);
+    const lastClose = text.lastIndexOf(">", cut - 1);
+    if (lastOpen > lastClose) cut = lastOpen;
+    // Never cut inside an HTML entity ("&amp;") — half an entity renders as junk.
+    const lastAmp = text.lastIndexOf("&", cut - 1);
+    const lastSemi = text.lastIndexOf(";", cut - 1);
+    if (lastAmp > lastSemi && cut - lastAmp < 12) cut = lastAmp;
+    return cut;
+  };
+
+  // The closing tags count toward the limit, so budget for them and re-check:
+  // shortening the cut can change which tags are open.
+  let cut = adjust(limit - ellipsis.length);
+  for (let pass = 0; pass < 3; pass++) {
+    const closers = openAt(text.slice(0, cut)).map((t) => `</${t}>`).join("");
+    const budget = limit - ellipsis.length - closers.length;
+    if (cut <= budget) break;
+    cut = adjust(budget);
+  }
+
+  const out = text.slice(0, cut);
+  const closers = openAt(out).reverse().map((t) => `</${t}>`).join("");
+  return out + closers + ellipsis;
+}
+
 export async function sendMessageWithButtons(text, inlineKeyboard) {
   if (!TOKEN || !chatId) return;
   return postTelegram("sendMessage", {
-    text: String(text).slice(0, 4096),
+    text: safeTruncate(String(text)),
     reply_markup: { inline_keyboard: inlineKeyboard },
   });
 }
 
 export async function sendHTML(html) {
   if (!TOKEN || !chatId) return;
-  return postTelegram("sendMessage", { text: html.slice(0, 4096), parse_mode: "HTML" });
+  return postTelegram("sendMessage", { text: safeTruncate(html), parse_mode: "HTML" });
 }
 
 export async function editMessage(text, messageId, { parseMode } = {}) {
   if (!TOKEN || !chatId || !messageId) return null;
   return postTelegram("editMessageText", {
     message_id: messageId,
-    text: String(text).slice(0, 4096),
+    text: safeTruncate(String(text)),
     ...(parseMode ? { parse_mode: parseMode } : {}),
   });
 }
@@ -206,7 +276,7 @@ export async function editMessageWithButtons(text, messageId, inlineKeyboard) {
   if (!TOKEN || !chatId || !messageId) return null;
   return postTelegram("editMessageText", {
     message_id: messageId,
-    text: String(text).slice(0, 4096),
+    text: safeTruncate(String(text)),
     reply_markup: { inline_keyboard: inlineKeyboard },
   });
 }
@@ -322,7 +392,7 @@ export async function createLiveMessage(title, intro = "Starting...", { parseMod
     if (state.intro) sections.push(state.intro);
     if (state.toolLines.length > 0) sections.push(state.toolLines.join("\n"));
     if (state.footer) sections.push(state.footer);
-    return sections.join("\n\n").slice(0, 4096);
+    return safeTruncate(sections.join("\n\n"));
   }
 
   async function flushNow() {
