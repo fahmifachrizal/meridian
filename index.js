@@ -39,6 +39,7 @@ import { checkRejectionHysteresis } from "./guards/03-rejection-hysteresis.js";
 import { checkFastExit } from "./guards/06-fast-exit.js";
 import { checkSmartWalletsOnPool } from "./state/smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
+import { mapWithConcurrency, valueOr } from "./util/concurrent.js";
 import { stageSignals } from "./state/signal-tracker.js";
 import { getWeightsSummary } from "./state/signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./integrations/hivemind.js";
@@ -531,23 +532,43 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (FIXED — never change) | deposit: SOL only (amount_y, amount_x=0)`
       + (activeStrategy ? `\nSTRATEGY CONTEXT: ${activeStrategy.name} — entry: ${activeStrategy.entry?.condition || "n/a"} | exit: ${activeStrategy.exit?.notes || "n/a"} | best for: ${activeStrategy.best_for}` : "");
 
-    const allCandidates = [];
-    for (const pool of candidates) {
-      const mint = pool.base?.mint;
-      const [smartWallets, narrative, tokenInfo] = await Promise.allSettled([
-        checkSmartWalletsOnPool({ pool_address: pool.pool }),
-        mint ? getTokenNarrative({ mint }) : Promise.resolve(null),
-        mint ? getTokenInfo({ query: mint }) : Promise.resolve(null),
-      ]);
-      allCandidates.push({
-        pool,
-        sw: smartWallets.status === "fulfilled" ? smartWallets.value : null,
-        n: narrative.status === "fulfilled" ? narrative.value : null,
-        ti: tokenInfo.status === "fulfilled" ? tokenInfo.value?.results?.[0] : null,
-        mem: recallForPool(pool.pool),
-      });
-      await new Promise(r => setTimeout(r, 150)); // avoid 429s
+    // Recon runs with bounded concurrency and a hard deadline. This used to
+    // be a sequential loop with a 150ms sleep per candidate, so one stalled
+    // API could cost candidates x fetch-timeout (~151s worst case, and
+    // 102s/251s cycles were observed live). The concurrency limit keeps the
+    // 429-avoidance the sleep was there for, without its dead time —
+    // checkSmartWalletsOnPool is cached after the first candidate anyway.
+    const reconTimeout = config.screening.enrichTimeoutMs;
+    const reconResults = await mapWithConcurrency(
+      candidates,
+      async (pool) => {
+        const mint = pool.base?.mint;
+        const [smartWallets, narrative, tokenInfo] = await Promise.allSettled([
+          checkSmartWalletsOnPool({ pool_address: pool.pool }),
+          mint ? getTokenNarrative({ mint }, { timeoutMs: reconTimeout }) : Promise.resolve(null),
+          mint ? getTokenInfo({ query: mint }, { timeoutMs: reconTimeout }) : Promise.resolve(null),
+        ]);
+        return {
+          sw: smartWallets.status === "fulfilled" ? smartWallets.value : null,
+          n: narrative.status === "fulfilled" ? narrative.value : null,
+          ti: tokenInfo.status === "fulfilled" ? tokenInfo.value?.results?.[0] : null,
+        };
+      },
+      { limit: config.screening.reconConcurrency, deadlineMs: config.screening.reconDeadlineSec * 1000 },
+    );
+
+    // A candidate whose recon timed out is kept with null enrichment rather
+    // than dropped — the filters below already treat missing ti/n/sw as
+    // "unknown", so it simply can't win on narrative or smart wallets.
+    const abandoned = reconResults.filter((r) => r.status === "timedout").length;
+    if (abandoned > 0) {
+      log("cron_warn", `Recon deadline hit — ${abandoned}/${candidates.length} candidate(s) enriched with partial data`);
     }
+    const allCandidates = candidates.map((pool, i) => ({
+      pool,
+      ...(valueOr(reconResults[i]) || { sw: null, n: null, ti: null }),
+      mem: recallForPool(pool.pool),
+    }));
 
     // Hard filters after token recon — block launchpads and excessive Jupiter bot holders
     const filteredOut = [];

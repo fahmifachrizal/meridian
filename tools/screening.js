@@ -8,6 +8,7 @@ import { getTokenAgeWindowRejectReason } from "../guards/01-token-age-window.js"
 import { checkRepeatDeployCooldown } from "../guards/02-repeat-deploy-cooldown.js";
 import { recordTvlSnapshot } from "../guards/04-tvl-decline.js";
 import { fetchWithTimeout } from "../util/fetch-timeout.js";
+import { cachedJson } from "../util/http-cache.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
@@ -223,13 +224,9 @@ async function fetchPoolDiscoveryPage({ page_size, filters, timeframe, category 
     `&timeframe=${timeframe}` +
     `&category=${category}`;
 
-  const res = await fetchWithTimeout(url);
-
-  if (!res.ok) {
-    throw new Error(`Pool Discovery API error: ${res.status} ${res.statusText}`);
-  }
-
-  return res.json();
+  // Cached: the opportunity poller runs this pipeline and then triggers a
+  // screening cycle that runs it again seconds later.
+  return cachedJson(url);
 }
 
 async function fetchPoolDiscoveryDetail({ poolAddress, timeframe }) {
@@ -238,13 +235,9 @@ async function fetchPoolDiscoveryDetail({ poolAddress, timeframe }) {
     `&filter_by=${encodeURIComponent(`pool_address=${poolAddress}`)}` +
     `&timeframe=${timeframe}`;
 
-  const res = await fetchWithTimeout(url);
-
-  if (!res.ok) {
-    throw new Error(`Pool detail API error: ${res.status} ${res.statusText}`);
-  }
-
-  const data = await res.json();
+  // Cached: applyVolatilityTimeframe fans this out once per pool (up to 50
+  // per discovery) and the pipeline can run twice within seconds.
+  const data = await cachedJson(url);
   return (data.data || [])[0] ?? null;
 }
 
@@ -297,9 +290,9 @@ async function applyVolatilityTimeframe(rawPools, sourceTimeframe) {
 }
 
 async function searchAssetsBySymbol(symbol) {
-  const res = await fetchWithTimeout(`${DATAPI_JUP}/assets/search?query=${encodeURIComponent(symbol)}`);
-  if (!res.ok) throw new Error(`assets/search ${res.status}`);
-  const data = await res.json();
+  // Cached: getTokenInfo hits this identical URL per candidate in the recon
+  // loop, right after enrichment already fetched it here.
+  const data = await cachedJson(`${DATAPI_JUP}/assets/search?query=${encodeURIComponent(symbol)}`);
   return Array.isArray(data) ? data : [data];
 }
 

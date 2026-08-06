@@ -19,7 +19,7 @@
     "pm2:down": "pm2 stop meridian || true && pm2 delete meridian || true",
     "pull:vps": "bash scripts/pull-vps-state.sh",
     "dev": "DRY_RUN=true node index.js",
-    "test": "npm run test:syntax && npm run test:json-store && npm run test:archive && npm run test:guards && npm run test:invariants && npm run test:regime && npm run test:regime-invariants && npm run test:regime-overlay && npm run test:regime-state && npm run test:benchmark && npm run test:benchmark-eval",
+    "test": "npm run test:syntax && npm run test:json-store && npm run test:concurrent && npm run test:archive && npm run test:guards && npm run test:invariants && npm run test:regime && npm run test:regime-invariants && npm run test:regime-overlay && npm run test:regime-state && npm run test:benchmark && npm run test:benchmark-eval",
     "test:syntax": "find . -path ./node_modules -prune -o -name '*.js' -exec node --check {} \\;",
     "test:regime": "DRY_RUN=true NODE_ENV=test node test/test-regime.js",
     "test:regime-invariants": "DRY_RUN=true NODE_ENV=test node test/test-regime-invariants.js",
@@ -36,7 +36,8 @@
     "postinstall": "node scripts/patch-anchor.js",
     "test:regime-overlay": "DRY_RUN=true NODE_ENV=test node test/test-regime-overlay.js",
     "test:regime-state": "DRY_RUN=true NODE_ENV=test node test/test-regime-state.js",
-    "test:archive": "DRY_RUN=true NODE_ENV=test node test/test-archive.js"
+    "test:archive": "DRY_RUN=true NODE_ENV=test node test/test-archive.js",
+    "test:concurrent": "DRY_RUN=true NODE_ENV=test node test/test-concurrent.js"
   },
   "knip": {
     "ignore": [
