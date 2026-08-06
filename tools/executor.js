@@ -325,6 +325,10 @@ export const CONFIG_MAP = {
   tokenAgeWindowEnabled: ["screening", "tokenAgeWindowEnabled"],
   tokenEarlyWindowMaxHours: ["screening", "tokenEarlyWindowMaxHours"],
   tokenCooldownHours: ["screening", "tokenCooldownHours"],
+  // candidate recon — concurrency + deadline for the screening enrichment phase
+  reconConcurrency: ["screening", "reconConcurrency"],
+  reconDeadlineSec: ["screening", "reconDeadlineSec"],
+  enrichTimeoutMs: ["screening", "enrichTimeoutMs"],
   // management
   minClaimAmount: ["management", "minClaimAmount"],
   autoSwapAfterClaim: ["management", "autoSwapAfterClaim"],

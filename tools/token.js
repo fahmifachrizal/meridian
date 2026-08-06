@@ -1,6 +1,7 @@
 import { config } from "../core/config.js";
 import { getGmgnTokenFees, hasGmgnApiKey } from "./gmgn.js";
 import { fetchWithTimeout } from "../util/fetch-timeout.js";
+import { cachedJson } from "../util/http-cache.js";
 
 const DATAPI_BASE = "https://datapi.jup.ag/v1";
 
@@ -19,8 +20,8 @@ async function resolveGlobalFeesSol(mint, jupiterFees) {
  * Get the narrative/story behind a token from Jupiter ChainInsight.
  * Useful for understanding if a token has a real community/theme vs nothing.
  */
-export async function getTokenNarrative({ mint }) {
-  const res = await fetchWithTimeout(`${DATAPI_BASE}/chaininsight/narrative/${mint}`);
+export async function getTokenNarrative({ mint }, { timeoutMs } = {}) {
+  const res = await fetchWithTimeout(`${DATAPI_BASE}/chaininsight/narrative/${mint}`, {}, timeoutMs);
   if (!res.ok) throw new Error(`Narrative API error: ${res.status}`);
   const data = await res.json();
   return {
@@ -34,11 +35,11 @@ export async function getTokenNarrative({ mint }) {
  * Search for token data by name, symbol, or mint address.
  * Returns condensed token info useful for confidence scoring.
  */
-export async function getTokenInfo({ query }) {
+export async function getTokenInfo({ query }, { timeoutMs } = {}) {
+  // Cached: screening.js's PVP/launchpad enrichment hits this exact URL for
+  // the same mint earlier in the very same cycle.
   const url = `${DATAPI_BASE}/assets/search?query=${encodeURIComponent(query)}`;
-  const res = await fetchWithTimeout(url);
-  if (!res.ok) throw new Error(`Token search API error: ${res.status}`);
-  const data = await res.json();
+  const data = await cachedJson(url, { timeoutMs });
   const tokens = Array.isArray(data) ? data : [data];
   if (!tokens.length) return { found: false, query };
 

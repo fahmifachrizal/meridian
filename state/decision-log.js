@@ -1,24 +1,16 @@
-import fs from "fs";
-import { log } from "../logger.js";
 import { repoPath } from "../repo-root.js";
+import { loadCached, saveJson } from "./json-store.js";
+import { archiveAppend } from "./archive.js";
 
 const DECISION_LOG_FILE = repoPath("decision-log.json");
 const MAX_DECISIONS = 100;
 
 function load() {
-  if (!fs.existsSync(DECISION_LOG_FILE)) {
-    return { decisions: [] };
-  }
-  try {
-    return JSON.parse(fs.readFileSync(DECISION_LOG_FILE, "utf8"));
-  } catch (error) {
-    log("decision_log_warn", `Invalid ${DECISION_LOG_FILE}: ${error.message}`);
-    return { decisions: [] };
-  }
+  return loadCached(DECISION_LOG_FILE, () => ({ decisions: [] }), "decision_log");
 }
 
 function save(data) {
-  fs.writeFileSync(DECISION_LOG_FILE, JSON.stringify(data, null, 2));
+  saveJson(DECISION_LOG_FILE, data, "decision_log");
 }
 
 function sanitize(value, maxLen = 280) {
@@ -43,8 +35,12 @@ export function appendDecision(entry) {
     rejected: Array.isArray(entry.rejected) ? entry.rejected.map((r) => sanitize(r, 180)).filter(Boolean).slice(0, 8) : [],
   };
   data.decisions.unshift(decision);
+  // The active file stays capped — readers only ever ask for the most recent
+  // 6-10. The archive is what retains full history, since this cap alone
+  // discards roughly a day's worth of decisions every day.
   data.decisions = data.decisions.slice(0, MAX_DECISIONS);
   save(data);
+  archiveAppend("decisions", decision);
   return decision;
 }
 

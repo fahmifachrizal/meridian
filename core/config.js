@@ -113,6 +113,11 @@ export const config = {
     tokenAgeWindowEnabled:    u.tokenAgeWindowEnabled    ?? true,
     tokenEarlyWindowMaxHours: u.tokenEarlyWindowMaxHours ?? 6,
     tokenCooldownHours:       u.tokenCooldownHours       ?? 24,
+    // Candidate recon (screening cycle) — bounded concurrency + hard deadline.
+    // Replaces a sequential loop whose worst case was candidates x timeout.
+    reconConcurrency:  u.reconConcurrency  ?? 4,    // candidates enriched in parallel
+    reconDeadlineSec:  u.reconDeadlineSec  ?? 60,   // hard cap on the whole recon phase
+    enrichTimeoutMs:   u.enrichTimeoutMs   ?? 8000, // per-request cap for advisory enrichment
   },
 
   // ─── Position Management ────────────────

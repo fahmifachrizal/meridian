@@ -63,6 +63,9 @@ export const KEY_GROUPS = {
   tokenAgeWindowEnabled: "screening",
   tokenEarlyWindowMaxHours: "screening",
   tokenCooldownHours: "screening",
+  reconConcurrency: "screening",
+  reconDeadlineSec: "screening",
+  enrichTimeoutMs: "screening",
 
   // ── management ──
   minClaimAmount: "management",

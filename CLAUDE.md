@@ -107,7 +107,9 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 | `state/state.js` | 513 | `trackPosition`, `markOutOfRange/InRange`, `recordClaim`, `recordClose`, `setPositionInstruction`, `updatePnlAndCheckExits` (the deterministic rules: STOP_LOSS, TRAILING_TP, OUT_OF_RANGE, LOW_YIELD), `getStateSummary`. `syncOpenPositions` reconciles local state with on-chain after 5 min grace. |
 | `state/pool-memory.js` | 405 | Per-pool deploy history + rolling 48-snapshot trend (5min × 4h). Computes `avg_pnl_pct`, `win_rate`, `adjusted_win_rate` (excludes OOR pumps). Cooldown logic: low yield → 4h pool cooldown, 3× OOR closes → 12h pool+token cooldown, optional repeat-deploy cooldown (configurable trigger count/hours/min fee yield/scope). `recordPositionSnapshot`, `recallForPool` for prompt injection. |
 | `state/lessons.js` | 765 | `recordPerformance(perf)` called by executor after `close_position`. Builds lesson string (PREFER/AVOID/WORKED/FAILED). Pinned + role-tagged lesson injection (3-tier cap: PINNED, ROLE, RECENT) with `ROLE_TAGS` map. `evolveThresholds` adjusts `minOrganic` (auto), and writes `[AUTO-EVOLVED @ N]` lesson + applies to live `config`. **Known bug: also references `maxVolatility` and `minFeeTvlRatio` which don't exist in config — no-op for those keys.** `pushHiveLesson`/`pushHivePerformanceEvent` are fire-and-forget. |
-| `state/decision-log.js` | 68 | Rolling 100-entry log. Types: `deploy` / `close` / `skip` / `no_deploy`. Each entry: actor, pool, summary, reason, risks[], metrics{}, rejected[]. Surfaced via `get_recent_decisions` tool and `getDecisionSummary()` in the prompt. |
+| `state/decision-log.js` | 68 | Rolling 100-entry log. Types: `deploy` / `close` / `skip` / `no_deploy`. Each entry: actor, pool, summary, reason, risks[], metrics{}, rejected[]. Surfaced via `get_recent_decisions` tool and `getDecisionSummary()` in the prompt. The 100-cap is *runtime* behavior only — full history goes to the `decisions` archive stream, because real volume is ~100/day and the cap was destroying about a day of history daily. |
+| `state/json-store.js` | ~105 | `loadCached(path, makeEmpty, label)` / `saveJson` / `invalidateCache`. Caches the parsed object, re-parsing only when mtime **or size** changes. Every state store reads through it. **Returns a SHARED mutable reference** — mutate only if you then save; never mutate-and-abandon or the mutation is served to the next reader as if persisted. Defensive copying was measured and rejected (`structuredClone` of pool-memory.json costs 2.26ms vs a 1.86ms parse). Measured win: 400 pool-memory reads went 744ms → 8.7ms. |
+| `state/archive.js` | ~140 | Dated append-only JSONL at `logs/archive/<stream>-YYYYMMDD.jsonl`, four streams (`decisions`, `performance`, `lessons`, `positions`) hooked at their existing single write points. JSONL because appending is a pure `appendFileSync`. Date computed **per write** (UTC, copying `logger.js`) so a long-lived process rolls over at midnight. `archiveAppend` never throws into its caller — an archive must never break a deploy. **Suppressed when `NODE_ENV=test`**. ~98 KB/day / ~35 MB/year measured across all four streams. |
 | `state/signal-tracker.js` | 87 | In-memory 10-min staging for screening-time signals (`organic_score`, `fee_tvl_ratio`, …). Cleared on deploy or TTL. **Not persisted** — fine because the staged snapshot is also written to `state.json` via `trackPosition({ signal_snapshot })`. |
 | `state/signal-weights.js` | 330 | Darwinian signal weighting. Recalculates every 5 closes (or 10-sample min). Splits signals into quartiles; top → `weight*1.05`, bottom → `weight*0.95`. Persists `signal-weights.json`. `getWeightsSummary()` injected into SCREENER prompt. |
 | `state/strategy-library.js` | 227 | Saved LP strategies. Five defaults preloaded: `custom_ratio_spot`, `single_sided_reseed`, `fee_compounding`, `multi_layer`, `partial_harvest`. `getActiveStrategy()` → used in SCREENER prompt. |
@@ -123,6 +125,10 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 | `discord-listener/pre-checks.js` | 205 | Pipeline: dedup (10min) → blacklist → pool resolution (Meteora direct → DexScreener) → rugcheck.xyz (score>50000 OR top10>60% reject) → deployer blacklist → Jupiter global fees check (`minTokenFeesSol`). |
 | **Infra** (stays at repo root — see reasoning in each row) | | |
 | `util/envcrypt.js` | 121 | XOR-cipher with a key from `.envrypt`/`ENVRYPT_KEY`. Encrypts anything matching `*_KEY`, `*SECRET*`, `*TOKEN*`, `*MNEMONIC*`, etc. The `# encrypted` marker in `.env` precedes encrypted lines. |
+| `util/fetch-timeout.js` | 25 | `fetchWithTimeout(url, options, timeoutMs)`, 15s default via `AbortController`. Native `fetch` has **no** default timeout — an accepted-but-silent connection hangs the await forever, which is what wedged `_screeningBusy` for 13h in production. |
+| `util/concurrent.js` | ~95 | `mapWithConcurrency(items, fn, {limit, deadlineMs})` — bounded parallelism with a hard deadline, results in input order, never rejects. Unfinished items return `{status:"timedout"}`. Used by the screening recon phase; `valueOr(result, fallback)` is the companion accessor. |
+| `util/http-cache.js` | ~110 | `cachedJson(url, {ttlMs, timeoutMs})` — in-process TTL cache + inflight dedup for idempotent discovery GETs. Non-OK responses are never cached, and any error falls through to a real fetch, so it can't starve a cycle. Deliberately not Redis (single process, small bodies; a hop + re-parse would cost more than it saves). |
+| `integrations/telegram-format.js` | ~160 | The house style: `card`, `compactLine`, `positionBlock` (4 dense lines, replaces the 7-row table), `noDeployReport` (`html:true` for direct sends, `html:false` for `runScreeningCycle`, which escapes `screenReport` wholesale at finalize), plus `fmt*` helpers that render null/"" as `?` rather than a misleading `0`. |
 | `logger.js` | 75 | Daily-rotating `logs/agent-YYYY-MM-DD.log`. `logAction({tool, args, result, duration_ms, success})` writes JSONL `actions-YYYY-MM-DD.jsonl` audit trail. Level via `LOG_LEVEL` env. **Deliberately stays at repo root** — imported by 18-19 of the 25 files under `core/`/`state/`/`regime/`/`integrations/`, a near-universal dependency rather than a concern bucket. |
 | `repo-root.js` | 11 | `REPO_ROOT`/`repoPath()` — anchors JSON state-file resolution to wherever this file itself lives. **Deliberately stays at repo root**, same reasoning as `logger.js`, plus: JSON files never moved in the 2026-07 folder reorg, so the anchor can't move without every `repoPath("x.json")` call resolving one level off. |
 | **Other** | | |
@@ -326,6 +332,23 @@ auto-swap on close (executor.js:610)
 | `hivemind-cache.json` | `{ sharedLessons: [], presets: [], pulledAt }` | `hivemind.js` |
 | `logs/agent-YYYY-MM-DD.log` | Plain text | `logger.js` |
 | `logs/actions-YYYY-MM-DD.jsonl` | Audit JSONL | `logger.js logAction` |
+| `logs/archive/<stream>-YYYYMMDD.jsonl` | One JSON record per line. Streams: `decisions`, `performance`, `lessons`, `positions`. Append-only, never read by the running agent — `readArchive()` is for analysis/backtest scripts. ~98 KB/day total. | `state/archive.js` |
+
+**Active file vs archive.** Each store keeps ONE complete active file (so
+`repoPath()`, `pull-vps-state.sh`'s `VERBATIM_FILES`, and every consumer keep
+working unchanged) and *additionally* appends to a dated archive. Sharding
+the active stores by date was considered and rejected: `pool-memory.js` does
+cross-key `Object.values(db)` scans for base-mint cooldowns (:74, :347) and
+`state.js` looks positions up by address in 12 places, so a position opened
+Monday and closed Wednesday would land in the wrong shard.
+
+`scripts/migrate-archive.js` (operator-only, dry-run by default, `--yes` to
+write) backfills pre-existing history — bucketing each record by *its own*
+timestamp — then prunes the active files. Measured on real data:
+`state.json` 1045KB → 126KB, `pool-memory.json` 1395KB → 1044KB.
+**`lessons.json` is deliberately not shrunk**: `signal-weights.js:101,118-121`
+filters `performance[]` by `darwinWindowDays` (60), so that window is a hard
+retention floor — pruning below it silently degrades Darwin signal weighting.
 
 All persistent files are loaded/saved on each call — no in-memory caching layer. Keep writes small and on the path of one position close, never inside a hot loop.
 
@@ -338,7 +361,7 @@ All persistent files are loaded/saved on each call — no in-memory caching laye
 | Section | Keys | Default |
 |---|---|---|
 | `risk` | `maxPositions`, `maxDeployAmount` | 3, 50 |
-| `screening` | `excludeHighSupplyConcentration`, `minFeeActiveTvlRatio`, `minTvl`, `maxTvl`, `minVolume`, `minOrganic`, `minQuoteOrganic`, `minHolders`, `minMcap`, `maxMcap`, `minBinStep`, `maxBinStep`, `timeframe`, `category`, `minTokenFeesSol`, `useDiscordSignals`, `discordSignalMode`, `avoidPvpSymbols`, `blockPvpSymbols`, `maxBotHoldersPct`, `maxTop10Pct`, `allowedLaunchpads`, `blockedLaunchpads`, `minTokenAgeHours`, `maxTokenAgeHours` | see `user-config.example.json` |
+| `screening` | `excludeHighSupplyConcentration`, `minFeeActiveTvlRatio`, `minTvl`, `maxTvl`, `minVolume`, `minOrganic`, `minQuoteOrganic`, `minHolders`, `minMcap`, `maxMcap`, `minBinStep`, `maxBinStep`, `timeframe`, `category`, `minTokenFeesSol`, `useDiscordSignals`, `discordSignalMode`, `avoidPvpSymbols`, `blockPvpSymbols`, `maxBotHoldersPct`, `maxTop10Pct`, `allowedLaunchpads`, `blockedLaunchpads`, `minTokenAgeHours`, `maxTokenAgeHours`, `reconConcurrency`, `reconDeadlineSec`, `enrichTimeoutMs` | see `user-config.example.json`; recon defaults 4 / 60s / 8000ms |
 | `management` | `minClaimAmount`, `autoSwapAfterClaim`, `outOfRangeBinsToClose`, `outOfRangeWaitMinutes`, `oorCooldownTriggerCount`, `oorCooldownHours`, `repeatDeployCooldownEnabled`, `repeatDeployCooldownTriggerCount`, `repeatDeployCooldownHours`, `repeatDeployCooldownScope`, `repeatDeployCooldownMinFeeEarnedPct`, `minVolumeToRebalance`, `stopLossPct`, `takeProfitPct`, `minFeePerTvl24h`, `minAgeBeforeYieldCheck`, `minSolToOpen`, `deployAmountSol`, `gasReserve`, `positionSizePct`, `trailingTakeProfit`, `trailingTriggerPct`, `trailingDropPct`, `pnlSanityMaxDiffPct`, `solMode` | 5, false, 10, 30, 3, 12, true, 3, 12, "token", 0, 1000, -50, 5, 7, 60, 0.55, 0.5, 0.2, 0.35, true, 3, 1.5, 5, false |
 | `strategy` | `strategy`, `minBinsBelow`, `maxBinsBelow`, `defaultBinsBelow` | bid_ask, 35, 69, 69 |
 | `schedule` | `managementIntervalMin`, `screeningIntervalMin`, `healthCheckIntervalMin` | 10, 30, 60 |
@@ -464,14 +487,26 @@ Standalone process — `cd discord-listener && npm install && npm start`. Shares
 `npm test` is the gate — it must stay green through any change to `core/config.js`,
 `tools/executor.js`'s `CONFIG_MAP`, `getDeterministicCloseRule` (index.js),
 `regime-overlay.js`'s `REGIME_TUNABLE`, or any of the 7 post-mortem guards.
-It runs, in order: `test:syntax`, `test:guards`, `test:invariants`,
+It runs, in order: `test:syntax`, `test:json-store`, `test:telegram-format`,
+`test:concurrent`, `test:archive`, `test:guards`, `test:invariants`,
 `test:regime`, `test:regime-invariants`, `test:regime-overlay`,
 `test:regime-state`, `test:benchmark`, `test:benchmark-eval` — all offline,
-no network, no wallet, no live agent. 168 checks total as of this writing.
+no network, no wallet, no live agent. 307 checks total as of this writing.
+
+**Every test script sets `NODE_ENV=test`**, and that is load-bearing, not
+cosmetic: it suppresses `state/archive.js` writes. Without it,
+`test-regime.js` → `applyConfigChanges` → `addLesson` would append a
+synthetic lesson to a real archive shard on every run, and
+`withRestoredFile` cannot undo it (it snapshots one path; appends land in
+`logs/archive/`). If you add a test script, set `NODE_ENV=test` on it.
 
 | Script | Covers |
 |---|---|
 | `test:syntax` | Every file in the repo parses. |
+| `test:json-store` | The mtime+size cache behind every JSON store — cache hits, and (the ones that matter) invalidation on external writes including a same-size rewrite, plus fail-open on missing/corrupt files. |
+| `test:telegram-format` | `safeTruncate` against six adversarial inputs (never over 4096 *including* the closing tags it appends, never an unbalanced tag, never half an entity), the compact formatters, and `noDeployReport`'s HTML/plain duality. |
+| `test:concurrent` | `mapWithConcurrency`'s deadline — a task sleeping 5000ms must return within a 150ms budget — plus concurrency ceiling, input-order results, and that it never rejects. |
+| `test:archive` | Suppression under test (see the `NODE_ENV` note above), UTC date bucketing across a midnight boundary, shard merge/range filtering, and graceful handling of malformed lines. |
 | `test:guards` | The 7 SalaryCat-SOL post-mortem guards (token-age window, rejection hysteresis, TVL decline check). |
 | `test:invariants` | **"Absolute state" contract tests** — see below. This is the one future changes are most likely to break, and the one that matters most. |
 | `test:regime` | `classifyRegime()`'s decision tree + `market-regime-library.js`'s profile store, active-pointer persistence, `applyConfigChanges` round-trip. |
@@ -583,7 +618,11 @@ positions, not live re-screening.
 
 When adding a new tool that reads on-chain data, copy the **cache + inflight dedup + `force` flag** pattern from `getMyPositions` (`tools/dlmm.js:1154`). The `force: true` is what the deploy safety check relies on.
 
-When adding a new persistent JSON store, copy the load/save pattern from `state.js` or `pool-memory.js`. **Always** run text through `sanitizeStoredText` (or write a domain-specific sanitizer that strips `<>` and newlines) before persisting — those values get echoed into the LLM prompt later.
+When adding a new persistent JSON store, copy the load/save pattern from `state.js` or `pool-memory.js` — which now means `loadCached`/`saveJson` from `state/json-store.js`, never a raw `readFileSync`+`JSON.parse`. Respect its shared-reference contract: load → mutate → save, with no early return in between. **Always** run text through `sanitizeStoredText` (or write a domain-specific sanitizer that strips `<>` and newlines) before persisting — those values get echoed into the LLM prompt later. If the store accumulates history rather than current state, add an `archiveAppend()` at its write point instead of letting the file grow forever.
+
+When adding anything that fans out over N items with network calls, use `mapWithConcurrency` from `util/concurrent.js` rather than a sequential `for...await` loop. A sequential loop makes worst-case latency `N × timeout`; that is exactly how a screening cycle reached 251s. Always pass a `deadlineMs`.
+
+When adding a user-visible Telegram message, build it with `integrations/telegram-format.js` — never hand-assemble HTML and never `.slice()` to the 4096 limit yourself (`safeTruncate` exists because a cut inside a tag makes Telegram drop the entire message silently). If the LLM authors the text, give its prompt an explicit output contract; the `GENERAL` role's missing one is why markdown tables reached production.
 
 When adding a new pre-LLM enrichment, follow the **3-strikes (Discord pre-checks)** model: cheap checks first (in-memory dedup, file lookup), then network (pool resolution, rugcheck), then more network (deployer, global fees). Log each pass/reject with the stage name.
 

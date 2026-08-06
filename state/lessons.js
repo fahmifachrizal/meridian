@@ -10,6 +10,8 @@ import fs from "fs";
 import { log } from "../logger.js";
 import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "../integrations/hivemind.js";
 import { repoPath } from "../repo-root.js";
+import { loadCached, saveJson } from "./json-store.js";
+import { archiveAppend } from "./archive.js";
 import { shouldPinAvoid } from "../guards/07-avoid-pin.js";
 import { flattenConfig, groupConfig } from "../core/config-groups.js";
 
@@ -47,18 +49,11 @@ function sanitizeLessonText(text, maxLen = MAX_MANUAL_LESSON_LENGTH) {
 }
 
 function load() {
-  if (!fs.existsSync(LESSONS_FILE)) {
-    return { lessons: [], performance: [] };
-  }
-  try {
-    return JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8"));
-  } catch {
-    return { lessons: [], performance: [] };
-  }
+  return loadCached(LESSONS_FILE, () => ({ lessons: [], performance: [] }), "lessons");
 }
 
 function save(data) {
-  fs.writeFileSync(LESSONS_FILE, JSON.stringify(data, null, 2));
+  saveJson(LESSONS_FILE, data, "lessons");
 }
 
 function buildSignalSnapshot(perf) {
@@ -155,7 +150,9 @@ export async function recordPerformance(perf) {
   }
 
   save(data);
+  archiveAppend("performance", entry);
   if (lesson) {
+    archiveAppend("lessons", lesson);
     void pushHiveLesson(lesson);
   }
 
@@ -533,6 +530,7 @@ export function addLesson(rule, tags = [], { pinned = false, role = null } = {})
   };
   data.lessons.push(lesson);
   save(data);
+  archiveAppend("lessons", lesson);
   log("lessons", `Manual lesson added${pinned ? " [PINNED]" : ""}${role ? ` [${role}]` : ""}: ${safeRule}`);
   void pushHiveLesson(lesson);
 }
