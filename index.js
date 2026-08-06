@@ -103,7 +103,15 @@ function buildPrompt() {
 let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
+let _screeningBusySince = 0; // epoch ms — set whenever _screeningBusy flips true; backstop for a hung cycle (e.g. an unbounded fetch) that never reaches its own finally block
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
+
+// A screening cycle should never legitimately run longer than a few minutes.
+// If _screeningBusy has been stuck true for way past that, something hung
+// (an external call with no timeout) and never reached its own `finally`
+// reset — force-clear it so the loop can recover instead of staying wedged
+// until the next process restart.
+const SCREENING_STALE_LOCK_MS = 10 * 60 * 1000;
 // Exit/peak confirmation is now done by consecutive-tick counting in state.js
 // (registerExitSignal / confirmPeak), driven by the 3s RPC poller — no setTimeout rechecks.
 
@@ -430,10 +438,15 @@ function noteScreeningResult(deployed) {
 
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_screeningBusy) {
-    log("cron", "Screening skipped — previous cycle still running");
-    return null;
+    if (Date.now() - _screeningBusySince > SCREENING_STALE_LOCK_MS) {
+      log("cron_error", `Screening lock stale for ${Math.round((Date.now() - _screeningBusySince) / 1000)}s — a prior cycle likely hung on an external call; force-clearing and proceeding`);
+    } else {
+      log("cron", "Screening skipped — previous cycle still running");
+      return null;
+    }
   }
   _screeningBusy = true; // set immediately — prevents TOCTOU race with concurrent callers
+  _screeningBusySince = Date.now();
   _screeningLastTriggered = Date.now();
 
   // Hard guards — don't even run the agent if preconditions aren't met
