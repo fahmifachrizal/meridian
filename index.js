@@ -30,7 +30,7 @@ import { noDeployReport, positionBlock } from "./integrations/telegram-format.js
 import { generateBriefing } from "./integrations/briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state/state.js";
 import { getActiveStrategy } from "./state/strategy-library.js";
-import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRelax, isRegimeSuppressed } from "./regime/market-regime-library.js";
+import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRelax, isRegimeSuppressed, resetConsecutiveFails } from "./regime/market-regime-library.js";
 import { classifyRegime } from "./regime/market-regime.js";
 import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime/regime-overlay.js";
 import { CONFIG_MAP } from "./tools/executor.js";
@@ -1404,6 +1404,7 @@ function formatHelpText() {
     "/hive pull — manual HiveMind pull now",
     "/pause — stop cron cycles",
     "/resume — start cron cycles again",
+    "/reset-regime — force regime back to normal, reload true screening thresholds",
     "/stop — shut down agent",
   ].join("\n");
 }
@@ -1506,8 +1507,12 @@ async function drainTelegramQueue() {
 
 async function telegramHandler(msg) {
   // In groups Telegram appends "@BotHandle" to slash commands (e.g. "/pool@MeridianFF_bot 2") —
-  // strip it before matching so command handlers below still fire.
-  const text = msg?.text?.trim().replace(/^(\/[a-zA-Z0-9_]+)@\S+/, "$1");
+  // strip it before matching so command handlers below still fire. Includes
+  // "-" so /reset-regime survives the same stripping as the underscore/alnum
+  // commands (Telegram's own bot-command entity parser doesn't allow "-",
+  // but msg.text still carries the full literal string either way, and this
+  // regex is the only place that string gets touched before comparison).
+  const text = msg?.text?.trim().replace(/^(\/[a-zA-Z0-9_-]+)@\S+/, "$1");
   if (!text) return;
   if (msg?.isCallback && text.startsWith("cfg:")) {
     try {
@@ -1730,6 +1735,44 @@ async function telegramHandler(msg) {
       await sendMessage("▶️ Autonomous cycles resumed.").catch(() => {});
     } else {
       await sendMessage("Autonomous cycles are already running.").catch(() => {});
+    }
+    return;
+  }
+
+  if (text === "/reset-regime") {
+    try {
+      const prevRegime = getActiveRegime()?.id ?? "normal";
+      const before = {
+        minTvl: config.screening.minTvl,
+        minVolume: config.screening.minVolume,
+        minOrganic: config.screening.minOrganic,
+        deployAmountSol: config.management.deployAmountSol,
+      };
+      // applyRegimeOverlay resets the regime pointer + the one risk key with
+      // its own normal: factor (deployAmountSol). Screening keys (minTvl/
+      // minVolume/minOrganic) have no normal: factor by design — "normal" is
+      // a no-op for them, so a stuck/drifted value would otherwise survive
+      // this call. reloadScreeningThresholds() forces those straight from
+      // the true on-disk baseline regardless, so this command is a real,
+      // complete reset — not just a regime-pointer flip.
+      applyRegimeOverlay("normal", "manual reset via /reset-regime", prevRegime);
+      reloadScreeningThresholds();
+      resetConsecutiveFails();
+      const after = {
+        minTvl: config.screening.minTvl,
+        minVolume: config.screening.minVolume,
+        minOrganic: config.screening.minOrganic,
+        deployAmountSol: config.management.deployAmountSol,
+      };
+      await sendMessage([
+        `✅ Regime reset: ${prevRegime} → normal`,
+        `minTvl: ${before.minTvl} → ${after.minTvl}`,
+        `minVolume: ${before.minVolume} → ${after.minVolume}`,
+        `minOrganic: ${before.minOrganic} → ${after.minOrganic}`,
+        `deployAmountSol: ${before.deployAmountSol} → ${after.deployAmountSol}`,
+      ].join("\n")).catch(() => {});
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
     return;
   }

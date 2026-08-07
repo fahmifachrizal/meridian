@@ -18,6 +18,21 @@
 # truth and is pulled verbatim. A file missing on the VPS is skipped, not an
 # error.
 #
+# Also pulls (best-effort, never a hard failure):
+#   - logs/ via rsync — the repo's own rotated logs (logs/agent-*.log,
+#     logs/actions-*.jsonl) AND the dated archive shards (logs/archive/).
+#   - PM2's raw stdout/stderr tail (last PM2_LOG_LINES lines) from inside the
+#     container, if VPS_CONTAINER is set — these live in the container's own
+#     filesystem, not on the VPS_PATH bind mount, so a plain file copy can't
+#     reach them; one `docker exec ... tail` over ssh does.
+#   - A live process snapshot (`pm2 jlist`, `docker ps`) — redundant
+#     corroboration alongside the log files, not a replacement for them.
+#   - Finally runs scripts/show-effective-config.js, which reconstructs the
+#     TRUE live config (baseline + active regime overlay, recomputed locally
+#     with the same pure function the agent itself uses — see that script's
+#     header for why this is exact, not an approximation) and flags
+#     staleness if the VPS has gone quiet.
+#
 # Usage:
 #   VPS_HOST=deploy@203.0.113.10 VPS_PATH=/home/deploy/meridian ./scripts/pull-vps-state.sh
 #
@@ -26,6 +41,10 @@
 #   VPS_PATH=/home/deploy/meridian
 #   VPS_PORT=22
 #   VPS_KEY=~/.ssh/id_ed25519
+#   VPS_CONTAINER=              # optional — docker container name running the
+#                                # agent, needed only for the PM2-log pull.
+#                                # Find it once with `docker ps` on the VPS.
+#   PM2_LOG_LINES=2000          # optional — tail window for the PM2 log pull
 #
 set -euo pipefail
 
@@ -41,6 +60,8 @@ VPS_HOST="${VPS_HOST:-}"
 VPS_PATH="${VPS_PATH:-}"
 VPS_PORT="${VPS_PORT:-22}"
 VPS_KEY="${VPS_KEY:-}"
+VPS_CONTAINER="${VPS_CONTAINER:-}"
+PM2_LOG_LINES="${PM2_LOG_LINES:-2000}"
 
 if [ -z "$VPS_HOST" ] || [ -z "$VPS_PATH" ]; then
   echo "Missing VPS_HOST / VPS_PATH." >&2
@@ -48,12 +69,15 @@ if [ -z "$VPS_HOST" ] || [ -z "$VPS_PATH" ]; then
   exit 1
 fi
 
-# scp uses -P (capital) for port; ssh uses -p (lowercase). Two arrays so an
-# scp call never gets ssh's -p and silently misparses the port number as a
-# source file argument.
+# scp uses -P (capital) for port; ssh uses -p (lowercase). Two separate
+# arrays so an scp call never gets ssh's -p and silently misparses the port
+# number as a source file argument (this bit us once already — see CLAUDE.md).
 SCP_OPTS=(-P "$VPS_PORT" -o ConnectTimeout=10)
+SSH_OPTS=(-p "$VPS_PORT" -o ConnectTimeout=10)
 if [ -n "$VPS_KEY" ]; then
-  SCP_OPTS+=(-i "${VPS_KEY/#\~/$HOME}")
+  RESOLVED_KEY="${VPS_KEY/#\~/$HOME}"
+  SCP_OPTS+=(-i "$RESOLVED_KEY")
+  SSH_OPTS+=(-i "$RESOLVED_KEY")
 fi
 
 STAGING_DIR="$(mktemp -d)"
@@ -102,4 +126,71 @@ else
 fi
 
 echo ""
-echo "==> Done. Read-only against both the VPS and Supabase — nothing was pushed."
+echo "==> Pulling logs/ (rotated logs + dated archive shards)"
+echo ""
+
+mkdir -p "$REPO_ROOT/logs/vps-snapshot"
+
+# One rsync gets both logs/archive/*.jsonl (this session's dated archive
+# layer) and the repo's own logs/agent-*.log / logs/actions-*.jsonl in one
+# shot — they all live under the same VPS_PATH/logs/ directory. No --delete:
+# local-only files (e.g. from a local migrate-archive.js run) are never
+# removed, keeping this strictly additive/pull-only. Only new/changed bytes
+# transfer on repeat runs.
+if command -v rsync >/dev/null 2>&1; then
+  if rsync -az -e "ssh -p ${VPS_PORT} $([ -n "$VPS_KEY" ] && echo "-i $RESOLVED_KEY") -o ConnectTimeout=10" \
+      "${VPS_HOST}:${VPS_PATH}/logs/" "$REPO_ROOT/logs/" 2>/dev/null; then
+    echo "  ok    logs/ (archive + rotated logs)"
+  else
+    echo "  skip  logs/ (rsync failed — VPS_PATH/logs/ may not exist yet)"
+  fi
+else
+  echo "  skip  logs/ (rsync not found on this machine)"
+fi
+
+echo ""
+echo "==> Pulling PM2 process log + live status (best-effort, never blocks the rest of this script)"
+echo ""
+
+if [ -n "$VPS_CONTAINER" ]; then
+  if ssh "${SSH_OPTS[@]}" "$VPS_HOST" \
+      "docker exec ${VPS_CONTAINER} tail -n ${PM2_LOG_LINES} /root/.pm2/logs/meridian-out.log" \
+      > "$REPO_ROOT/logs/vps-snapshot/pm2-out.log" 2>/dev/null; then
+    echo "  ok    pm2-out.log (last ${PM2_LOG_LINES} lines)"
+  else
+    echo "  skip  pm2-out.log (ssh/docker exec failed)"
+    rm -f "$REPO_ROOT/logs/vps-snapshot/pm2-out.log"
+  fi
+  if ssh "${SSH_OPTS[@]}" "$VPS_HOST" \
+      "docker exec ${VPS_CONTAINER} tail -n ${PM2_LOG_LINES} /root/.pm2/logs/meridian-error.log" \
+      > "$REPO_ROOT/logs/vps-snapshot/pm2-error.log" 2>/dev/null; then
+    echo "  ok    pm2-error.log (last ${PM2_LOG_LINES} lines)"
+  else
+    echo "  skip  pm2-error.log (ssh/docker exec failed)"
+    rm -f "$REPO_ROOT/logs/vps-snapshot/pm2-error.log"
+  fi
+else
+  echo "  skip  PM2 log pull (VPS_CONTAINER not set in scripts/.env.vps — see this script's header)"
+fi
+
+# Live process snapshot — redundant corroboration alongside the log files
+# above, not a replacement for them. Saved to disk (not just printed) so
+# it's available for later reanalysis. Best-effort; never a hard failure.
+if ssh "${SSH_OPTS[@]}" "$VPS_HOST" "pm2 jlist" > "$REPO_ROOT/logs/vps-snapshot/pm2-status.json" 2>/dev/null; then
+  echo "  ok    pm2-status.json (pm2 jlist)"
+else
+  echo "  skip  pm2-status.json (ssh/pm2 failed)"
+  rm -f "$REPO_ROOT/logs/vps-snapshot/pm2-status.json"
+fi
+if ssh "${SSH_OPTS[@]}" "$VPS_HOST" "docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}'" > "$REPO_ROOT/logs/vps-snapshot/docker-ps.txt" 2>/dev/null; then
+  echo "  ok    docker-ps.txt"
+else
+  echo "  skip  docker-ps.txt (ssh/docker failed)"
+  rm -f "$REPO_ROOT/logs/vps-snapshot/docker-ps.txt"
+fi
+
+echo ""
+echo "==> Reconstructing effective runtime config + staleness check"
+node "$REPO_ROOT/scripts/show-effective-config.js"
+
+echo "==> Done. Read-only against the VPS and Supabase — nothing was pushed, no remote state was changed."

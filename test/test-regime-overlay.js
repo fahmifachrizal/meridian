@@ -16,6 +16,9 @@
  * Run: node test/test-regime-overlay.js
  */
 
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { createSuite } from "./lib/test-kit.js";
 import { CONFIG_MAP } from "../tools/executor.js";
 import {
@@ -23,6 +26,7 @@ import {
   RISK_KEYS,
   SCREENING_KEYS,
   computeRegimeOverlay,
+  readBaseline,
 } from "../regime/regime-overlay.js";
 
 const suite = createSuite("QA protocol — bounded regime overlay");
@@ -203,6 +207,64 @@ section("Overlay is pure");
   check("unknown regime id yields an empty overlay (fails safe)", Object.keys(unknown).length === 0);
   const nullish = computeRegimeOverlay(null, BASELINE);
   check("null regime yields an empty overlay (fails safe)", Object.keys(nullish).length === 0);
+}
+
+// ─── 7. readBaseline against a REAL grouped on-disk file ──────────
+// Regression test for the compounding-drift bug: user-config.json is
+// grouped by section ({screening: {minTvl: ...}}), but readBaseline() used
+// to do a flat onDisk[key] lookup that always missed, silently falling
+// through to whatever liveConfig currently held — which, after even one
+// prior regime transition, was no longer the true baseline. Confirmed live:
+// minTvl compounded 10000 -> 15000 -> 22500 -> 33750 across successive hot
+// transitions instead of ratcheting from 10000 every time. This test uses a
+// scratch file (never the real repo user-config.json) so it can never touch
+// the operator's actual config.
+section("readBaseline — grouped on-disk file (regression: compounding-drift bug)");
+{
+  const scratchPath = path.join(os.tmpdir(), `meridian-readbaseline-test-${process.pid}.json`);
+  const groupedOnDisk = {
+    screening: { minTvl: 10000, minVolume: 1000, minOrganic: 70 },
+    management: { deployAmountSol: 0.6 },
+  };
+  fs.writeFileSync(scratchPath, JSON.stringify(groupedOnDisk, null, 2));
+
+  try {
+    // A deliberately DRIFTED liveConfig — simulates a process that already
+    // ran through the old buggy compounding at least once. If readBaseline
+    // reads this instead of the disk file, the bug has regressed.
+    const driftedLiveConfig = {
+      screening: { minTvl: 33750, minVolume: 3375, minOrganic: 88 },
+      management: { deployAmountSol: 0.4335 },
+    };
+
+    const baseline = readBaseline(scratchPath, driftedLiveConfig, CONFIG_MAP);
+
+    check("reads minTvl from the grouped disk file, not the drifted live value", baseline.minTvl === 10000);
+    check("reads minVolume from the grouped disk file, not the drifted live value", baseline.minVolume === 1000);
+    check("reads minOrganic from the grouped disk file, not the drifted live value", baseline.minOrganic === 70);
+    check("reads deployAmountSol from the grouped disk file, not the drifted live value", baseline.deployAmountSol === 0.6);
+
+    // The actual failure mode: a hot transition computed from a correctly-
+    // read baseline must land on 1.5x the TRUE value, not 1.5x an already-
+    // drifted one.
+    const hotOverlay = computeRegimeOverlay("hot", baseline);
+    check("hot overlay ratchets from the true baseline (10000 * 1.5 = 15000)", hotOverlay.minTvl === 15000);
+    check("hot overlay does not compound onto the drifted live value (would be 33750 * 1.5 = 50625)", hotOverlay.minTvl !== 50625);
+
+    // Fallback path still works when a key is genuinely absent from disk.
+    const partialPath = path.join(os.tmpdir(), `meridian-readbaseline-partial-${process.pid}.json`);
+    fs.writeFileSync(partialPath, JSON.stringify({ screening: { minTvl: 10000 } }, null, 2));
+    const partialBaseline = readBaseline(partialPath, driftedLiveConfig, CONFIG_MAP);
+    check("present key still reads from disk", partialBaseline.minTvl === 10000);
+    check("missing key falls back to liveConfig", partialBaseline.minVolume === 3375);
+    fs.unlinkSync(partialPath);
+
+    // Missing file entirely -> pure liveConfig fallback, no throw.
+    const missingBaseline = readBaseline(path.join(os.tmpdir(), "meridian-readbaseline-does-not-exist.json"), driftedLiveConfig, CONFIG_MAP);
+    check("missing on-disk file falls back to liveConfig without throwing", missingBaseline.minTvl === 33750);
+  } finally {
+    fs.unlinkSync(scratchPath);
+  }
 }
 
 process.exit(suite.finish());
