@@ -39,6 +39,7 @@
  */
 
 import fs from "fs";
+import { flattenConfig } from "../core/config-groups.js";
 
 const MULT = "mult";
 const DELTA = "delta";
@@ -147,11 +148,26 @@ export function describeOverlay(overlay, baseline) {
  * Supabase pulls into. This is the authoritative "ideal" the agent references
  * but never writes. Falls back to the live config's current values per key so
  * a key absent from user-config.json still has a sane baseline.
+ *
+ * BUG FIXED HERE: user-config.json is grouped by section on disk
+ * ({screening: {minTvl: ...}}), but this function used to do a flat
+ * onDisk[key] lookup — which always missed, silently falling through to the
+ * liveConfig branch below on every call. That meant "baseline" was actually
+ * whatever the live in-memory value currently was, which — once a regime
+ * transition had already run once — could itself be a PRIOR overlay's
+ * output. Each subsequent hot/slow transition then compounded on top of the
+ * last one instead of ratcheting from the true operator value. Confirmed
+ * live: minTvl drifted 10000 -> 15000 -> 22500 -> 33750 across successive
+ * "normal -> hot" transitions, each one starting from the previous
+ * transition's result instead of the real 10000 baseline (minOrganic did
+ * the same: 70 -> 76 -> 82 -> 88). flattenConfig() is the same adapter
+ * reloadScreeningThresholds() (core/config.js) already uses correctly for
+ * this exact grouped-on-disk shape.
  */
 export function readBaseline(userConfigPath, liveConfig, configMap) {
   let onDisk = {};
   try {
-    if (fs.existsSync(userConfigPath)) onDisk = JSON.parse(fs.readFileSync(userConfigPath, "utf8"));
+    if (fs.existsSync(userConfigPath)) onDisk = flattenConfig(JSON.parse(fs.readFileSync(userConfigPath, "utf8")));
   } catch { /* fall through to live config */ }
 
   const baseline = {};
