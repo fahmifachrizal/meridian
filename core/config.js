@@ -330,6 +330,16 @@ export const config = {
  *   3.0 SOL wallet → 0.98 SOL deploy
  *   4.0 SOL wallet → 1.33 SOL deploy
  */
+// SOL amounts are always compared/displayed at 2-decimal precision. A raw
+// float like 0.7 * 0.85 is stored internally as ~0.59499999999999997, so
+// comparing an unrounded config value against an already-rounded amount
+// (e.g. what computeDeployAmount() below hands the LLM) can reject a
+// technically-valid deploy by less than half a cent. Round BOTH sides
+// through this before comparing anywhere SOL amounts meet a floor/ceiling.
+export function round2(n) {
+  return parseFloat(Number(n).toFixed(2));
+}
+
 export function computeDeployAmount(walletSol) {
   const reserve  = config.management.gasReserve      ?? 0.2;
   const pct      = config.management.positionSizePct ?? 0.35;
@@ -338,7 +348,7 @@ export function computeDeployAmount(walletSol) {
   const deployable = Math.max(0, walletSol - reserve);
   const dynamic    = deployable * pct;
   const result     = Math.min(ceil, Math.max(floor, dynamic));
-  return parseFloat(result.toFixed(2));
+  return round2(result);
 }
 
 /**

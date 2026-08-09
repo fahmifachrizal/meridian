@@ -682,6 +682,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     let deployAttempted = false;
     let deploySucceeded = false;
+    let deployFailureReason = null;
     const { content } = await agentLoop(`
 SCREENING CYCLE
 ${strategyBlock}
@@ -740,6 +741,10 @@ IMPORTANT:
           if (name === "deploy_position") {
             deployAttempted = true;
             deploySucceeded = Boolean(success && result?.success !== false && !result?.error && !result?.blocked);
+            if (!deploySucceeded) {
+              deployFailureReason = result?.reason || result?.error
+                || (result?.blocked ? "blocked: already attempted this session" : null);
+            }
           }
           await liveMessage?.toolFinish(name, result, success);
         },
@@ -761,6 +766,19 @@ IMPORTANT:
         reason: stripThink(content).slice(0, 500),
       });
       noteScreeningResult(false);
+      // NEVER trust the LLM's own report text here — the SCREENER prompt's
+      // "NO HALLUCINATION" rule says it must not claim success without a real
+      // tool result, but it does anyway often enough (observed: a "🚀 DEPLOYED"
+      // report written after deploy_position actually failed/was blocked).
+      // Build the Telegram-facing report deterministically from what actually
+      // happened instead of forwarding possibly-fabricated content.
+      if (/🚀\s*DEPLOYED/i.test(content)) {
+        log("cron_warn", `SCREENER reported a deploy but deploy_position did not succeed (${deployFailureReason || "no reason captured"}) — overriding hallucinated report`);
+      }
+      screenReport = noDeployReport({
+        reason: deployFailureReason || "deploy attempt did not succeed",
+        html: false,
+      });
     } else {
       noteScreeningResult(true);
     }
