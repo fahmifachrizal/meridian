@@ -22,7 +22,7 @@ import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../state/tok
 import { blockDev, unblockDev, listBlockedDevs } from "../state/dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../state/smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
-import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../core/config.js";
+import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW, round2 } from "../core/config.js";
 import { flattenConfig, groupConfig } from "../core/config-groups.js";
 import { getRecentDecisions } from "../state/decision-log.js";
 import { recordDeploy, recordClose } from "../state/position-log.js";
@@ -807,7 +807,11 @@ export async function executeTool(name, args) {
           tx_signatures: JSON.stringify(result.txs || []),
         }).catch(() => {});
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, solReturned: result.sol_returned }).catch(() => {});
+        // Deterministically computed by JS (state.js's updatePnlAndCheckExits /
+        // getDeterministicCloseRule, or a trailing-TP note) before the LLM is
+        // ever invoked — no LLM call involved in producing this text.
+        const closeReason = result.close_reason ?? args.reason ?? null;
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, solReturned: result.sol_returned, reason: closeReason }).catch(() => {});
         recordClose({
           position_id: args.position_address,
           pool_address: result.pool ?? null,
@@ -843,7 +847,7 @@ export async function executeTool(name, args) {
           range_efficiency: (result.minutes_held > 0 && result.minutes_in_range != null)
             ? parseFloat(((result.minutes_in_range / result.minutes_held) * 100).toFixed(1))
             : null,
-          close_reason: result.close_reason ?? args.reason ?? null,
+          close_reason: closeReason,
         }).catch(() => {});
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
@@ -1018,11 +1022,18 @@ async function runSafetyChecks(name, args) {
 
       // A guard #5 taper intentionally goes below the normal floor — use its
       // own (still >= 0.1 SOL) cap as the floor instead of the standard one.
-      const minDeploy = taperSizeCap != null ? taperSizeCap : Math.max(0.1, config.management.deployAmountSol);
-      if (amountY < minDeploy) {
+      // Both sides rounded to 2dp before comparing: computeDeployAmount()
+      // (core/config.js) hands the LLM an already-2dp-rounded number, but
+      // config.management.deployAmountSol itself is a raw float (e.g.
+      // 0.7 * 0.85 is stored as ~0.59499999999999997) — comparing that
+      // directly against the rounded amount the LLM was told to use could
+      // reject a technically-correct deploy by less than half a cent.
+      const minDeploy = round2(taperSizeCap != null ? taperSizeCap : Math.max(0.1, config.management.deployAmountSol));
+      const roundedAmountY = round2(amountY);
+      if (roundedAmountY < minDeploy) {
         return {
           pass: false,
-          reason: `Amount ${amountY} SOL is below the minimum deploy amount (${minDeploy} SOL). Use at least ${minDeploy} SOL.`,
+          reason: `Amount ${roundedAmountY} SOL is below the minimum deploy amount (${minDeploy} SOL). Use at least ${minDeploy} SOL.`,
         };
       }
       if (amountY > config.risk.maxDeployAmount) {

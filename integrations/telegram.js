@@ -608,7 +608,7 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned }) {
+export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned, reason }) {
   if (hasActiveLiveMessage()) return;
   const up = (pnlUsd ?? 0) >= 0;
   const sign = up ? "+" : "";
@@ -618,7 +618,8 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned }) {
       ["PnL", `${sign}$${(pnlUsd ?? 0).toFixed(2)}`],
       ["PnL %", `${sign}${(pnlPct ?? 0).toFixed(2)}%`],
       ["Returned", solReturned != null ? `◎${Number(solReturned).toFixed(4)}` : undefined],
-    ])
+    ]) +
+    (reason ? `\nReason: ${escapeHtml(String(reason))}` : "")
   );
 }
 
