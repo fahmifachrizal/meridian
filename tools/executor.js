@@ -693,7 +693,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Self-funded insurance pool — a small % of every deploy (management.
- * insurancePct) is skimmed to CASH at deploy time (see tools/dlmm.js's
+ * insurancePct) is skimmed to config.tokens.INSURANCE_TOKEN at deploy time (see tools/dlmm.js's
  * deployPosition()) and held aside in the same wallet. It's POOLED, not
  * per-position: one position's own skim is far too small (~$0.17 on a
  * typical deploy) to matter against a real ~$7-20 loss on its own — the
@@ -921,7 +921,7 @@ export async function executeTool(name, args) {
           }
         }
         // Insurance pool settlement — independent of the base-token swap
-        // above (insurance is already CASH, not the base token). Never
+        // above (insurance is already the insurance token, not the base token). Never
         // touches result.pnl_usd/pnl_pct — those stay the true trading
         // outcome for Darwin weighting / lesson analysis. Computed BEFORE
         // notifyClose() so the close message can show the full insurance

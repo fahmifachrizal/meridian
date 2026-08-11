@@ -168,7 +168,7 @@ export const config = {
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
     // Self-funded insurance pool: a small % of every deploy is swapped to
-    // CASH and held aside in the same wallet (never touches deploy sizing —
+    // tokens.INSURANCE_TOKEN and held aside in the same wallet (never touches deploy sizing —
     // computeDeployAmount() only reads .sol). Pooled, not per-position:
     // most positions never draw on it, so it accumulates across many
     // deploys and only a severe loss (stopLossPct * insuranceTriggerFraction)
