@@ -168,7 +168,7 @@ export const config = {
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
     // Self-funded insurance pool: a small % of every deploy is swapped to
-    // USDC and held aside in the same wallet (never touches deploy sizing —
+    // CASH and held aside in the same wallet (never touches deploy sizing —
     // computeDeployAmount() only reads .sol). Pooled, not per-position:
     // most positions never draw on it, so it accumulates across many
     // deploys and only a severe loss (stopLossPct * insuranceTriggerFraction)
@@ -221,6 +221,11 @@ export const config = {
     SOL:  "So11111111111111111111111111111111111111112",
     USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+    // Bridge-issued USD stablecoin (Token-2022) — used by the insurance
+    // pool (management.insurance*) instead of USDC. Verified via Jupiter's
+    // asset API before use: isVerified=true, "stable" tag, ~$119M mcap,
+    // ~471K holders, ~$1.00 price.
+    CASH: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
   },
 
   // ─── HiveMind ─────────────────────────

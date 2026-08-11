@@ -692,7 +692,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Self-funded insurance pool — a small % of every deploy (management.
- * insurancePct) is skimmed to USDC at deploy time (see tools/dlmm.js's
+ * insurancePct) is skimmed to CASH at deploy time (see tools/dlmm.js's
  * deployPosition()) and held aside in the same wallet. It's POOLED, not
  * per-position: one position's own skim is far too small (~$0.17 on a
  * typical deploy) to matter against a real ~$7-20 loss on its own — the
@@ -705,10 +705,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * methods landing 0.25%-0.6%, rounded up to 1% for swap-fee headroom).
  */
 
-/** Live USDC balance in the wallet — the pool IS this balance, no separate running counter to keep in sync. */
+/** Live CASH balance in the wallet — the pool IS this balance, no separate running counter to keep in sync. */
 async function getInsurancePoolBalance() {
-  const { usdc } = await getWalletBalances();
-  return Number(usdc) || 0;
+  const { tokens } = await getWalletBalances();
+  const cashEntry = (tokens || []).find((t) => t.mint === config.tokens.CASH);
+  return Number(cashEntry?.usd ?? cashEntry?.balance) || 0;
 }
 
 /**
@@ -909,7 +910,7 @@ export async function executeTool(name, args) {
           }
         }
         // Insurance pool settlement — independent of the base-token swap
-        // above (insurance is already USDC, not the base token). Never
+        // above (insurance is already CASH, not the base token). Never
         // touches result.pnl_usd/pnl_pct — those stay the true trading
         // outcome for Darwin weighting / lesson analysis.
         if (config.management.insuranceEnabled) {
@@ -924,7 +925,7 @@ export async function executeTool(name, args) {
           });
           if (withdrawUsd > 0) {
             const insuranceSwap = await swapToken({
-              input_mint: config.tokens.USDC,
+              input_mint: config.tokens.CASH,
               output_mint: config.tokens.SOL,
               amount: withdrawUsd,
             });

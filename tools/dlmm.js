@@ -595,12 +595,15 @@ export async function deployPosition({
     };
   }
 
-  // Self-funded insurance pool: skim a small % of this deploy to USDC,
-  // held aside in the same wallet, before committing the rest to the LP
-  // position. Pooled across deploys (not self-insured per position) — see
-  // computeInsuranceWithdraw() in executor.js for the close-time draw.
-  // A failed skim swap is non-fatal: deploy the full amount, no insurance
-  // for this position, rather than blocking the deploy entirely.
+  // Self-funded insurance pool: skim a small % of this deploy to CASH
+  // (Bridge's USD stablecoin, config.tokens.CASH), held aside in the same
+  // wallet, before committing the rest to the LP position. Pooled across
+  // deploys (not self-insured per position) — see computeInsuranceWithdraw()
+  // in executor.js for the close-time draw. A failed skim swap is
+  // non-fatal: deploy the full amount, no insurance for this position,
+  // rather than blocking the deploy entirely.
+  // NOTE: fields/vars below are named "usdc" for historical reasons (this
+  // used USDC before switching to CASH) — they hold CASH amounts now.
   let insuranceSol = 0;
   let insuranceUsdcAmount = 0;
   if (config.management.insuranceEnabled) {
@@ -608,7 +611,7 @@ export async function deployPosition({
     if (skim > 0) {
       const swapResult = await swapToken({
         input_mint: config.tokens.SOL,
-        output_mint: config.tokens.USDC,
+        output_mint: config.tokens.CASH,
         amount: skim,
       });
       if (swapResult?.success) {

@@ -89,7 +89,7 @@ export function trackPosition({
     stop_loss_pct_override,
     // Self-funded insurance pool (see core/config.js's management.insurance*
     // keys) — this position's own skim, kept for audit even though
-    // close-time settlement draws from the pooled wallet USDC balance, not
+    // close-time settlement draws from the pooled wallet CASH balance, not
     // strictly this field. insurance_settled_usd stays null until close.
     insurance_sol,
     insurance_usdc_amount,
