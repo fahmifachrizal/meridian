@@ -177,6 +177,11 @@ export const config = {
     insuranceEnabled:          u.insuranceEnabled          ?? false,
     insurancePct:              u.insurancePct              ?? 1,
     insuranceTriggerFraction:  u.insuranceTriggerFraction  ?? 0.5,
+    // Deploy-time cap: stop skimming once the pool reaches this % of the
+    // estimated total portfolio (wallet SOL + all open positions' SOL-
+    // equivalent value) — a backstop shouldn't itself become a large,
+    // unbounded slice of the portfolio.
+    insuranceMaxPoolPct:       u.insuranceMaxPoolPct       ?? 30,
   },
 
   // ─── Strategy Mapping ───────────────────

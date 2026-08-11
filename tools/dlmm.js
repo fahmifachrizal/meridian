@@ -25,7 +25,7 @@ import {
 } from "../state/state.js";
 import { recordPerformance } from "../state/lessons.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../state/pool-memory.js";
-import { normalizeMint, swapToken, getWalletBalances } from "./wallet.js";
+import { normalizeMint, swapToken, getWalletBalances, getInsurancePoolBalance } from "./wallet.js";
 import { appendDecision } from "../state/decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
 import { getAndClearStagedSignals } from "../state/signal-tracker.js";
@@ -609,17 +609,36 @@ export async function deployPosition({
   if (config.management.insuranceEnabled) {
     const skim = round2(finalAmountY * (config.management.insurancePct / 100));
     if (skim > 0) {
-      const swapResult = await swapToken({
-        input_mint: config.tokens.SOL,
-        output_mint: config.tokens.CASH,
-        amount: skim,
-      });
-      if (swapResult?.success) {
-        insuranceSol = skim;
-        insuranceUsdcAmount = Number(swapResult.amount_out) || 0;
-        finalAmountY = round2(finalAmountY - skim);
+      // Rule 6: stop growing the pool past insuranceMaxPoolPct% of the
+      // estimated total portfolio (wallet SOL + all open positions'
+      // SOL-equivalent value) — a backstop shouldn't itself become an
+      // unbounded slice of the portfolio.
+      const [poolUsd, { sol: walletSol, sol_price: solPrice }, myPositions] = await Promise.all([
+        getInsurancePoolBalance(),
+        getWalletBalances(),
+        getMyPositions({ silent: true }).catch(() => ({ positions: [] })),
+      ]);
+      const positionsUsd = (myPositions?.positions || []).reduce(
+        (sum, p) => sum + (Number(p.total_value_true_usd ?? p.total_value_usd) || 0), 0
+      );
+      const totalPortfolioUsd = solPrice > 0 ? walletSol * solPrice + positionsUsd : null;
+      const capUsd = totalPortfolioUsd != null ? totalPortfolioUsd * (config.management.insuranceMaxPoolPct / 100) : null;
+
+      if (capUsd != null && poolUsd >= capUsd) {
+        log("insurance_info", `Insurance pool at cap ($${poolUsd.toFixed(2)} >= ${config.management.insuranceMaxPoolPct}% of ~$${totalPortfolioUsd.toFixed(2)} portfolio) — skipping skim for this deploy`);
       } else {
-        log("insurance_warn", `Insurance skim swap failed, deploying full amount: ${swapResult?.error || "unknown error"}`);
+        const swapResult = await swapToken({
+          input_mint: config.tokens.SOL,
+          output_mint: config.tokens.CASH,
+          amount: skim,
+        });
+        if (swapResult?.success) {
+          insuranceSol = skim;
+          insuranceUsdcAmount = Number(swapResult.amount_out) || 0;
+          finalAmountY = round2(finalAmountY - skim);
+        } else {
+          log("insurance_warn", `Insurance skim swap failed, deploying full amount: ${swapResult?.error || "unknown error"}`);
+        }
       }
     }
   }

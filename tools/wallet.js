@@ -123,6 +123,18 @@ export async function getWalletBalances() {
 }
 
 /**
+ * Live CASH balance in the wallet — the insurance pool IS this balance,
+ * no separate running counter to keep in sync. Shared by dlmm.js (deploy-time
+ * cap check) and executor.js (close-time withdrawal) to avoid a circular
+ * import between the two (dlmm.js can't import from executor.js).
+ */
+export async function getInsurancePoolBalance() {
+  const { tokens } = await getWalletBalances();
+  const cashEntry = (tokens || []).find((t) => t.mint === config.tokens.CASH);
+  return Number(cashEntry?.usd ?? cashEntry?.balance) || 0;
+}
+
+/**
  * Swap tokens via Jupiter Swap API V2 (order → sign → execute).
  */
 const SOL_MINT = "So11111111111111111111111111111111111111112";
