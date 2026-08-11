@@ -83,6 +83,27 @@ fi
 STAGING_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGING_DIR"' EXIT
 
+# Connectivity self-check. If SSH itself is unreachable, every scp/ssh call
+# below will silently "skip" one by one with no single clear signal of why —
+# so check once, up front, and if it fails print the caller's own outbound
+# IP as a diagnostic (best-effort — this environment's egress IP is not
+# necessarily stable, so treat it as a data point, not a fixed identity to
+# permanently allowlist). Never blocks the rest of the script.
+if ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "$VPS_HOST" "true" >/dev/null 2>&1; then
+  SSH_REACHABLE=1
+else
+  SSH_REACHABLE=0
+  echo "==> WARNING: SSH to ${VPS_HOST} (port ${VPS_PORT}) is unreachable — every ssh/scp step below will be skipped."
+  MY_IP="$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null || echo "unknown")"
+  echo "    This environment's outbound IP right now: ${MY_IP}"
+  echo "    If your VPS firewall/security group allowlists SSH by source IP,"
+  echo "    check that list against the IP above. If port 22 is closed while"
+  echo "    other ports (80/443) respond, this more likely means sshd is down"
+  echo "    or a port-specific rule changed, not a source-IP allowlist issue —"
+  echo "    check the VPS console directly either way."
+  echo ""
+fi
+
 echo "==> Pulling live state from ${VPS_HOST}:${VPS_PATH}"
 echo ""
 

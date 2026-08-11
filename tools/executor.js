@@ -12,7 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../state/lessons.js";
-import { setPositionInstruction } from "../state/state.js";
+import { setPositionInstruction, setPositionInsuranceSettled, getTrackedPosition } from "../state/state.js";
 
 import { getPoolMemory, addPoolNote } from "../state/pool-memory.js";
 import { checkTvlDecline, recordTvlSnapshot } from "../guards/04-tvl-decline.js";
@@ -383,6 +383,9 @@ export const CONFIG_MAP = {
   degenTargetFeeRatio: ["opportunity", "targetFeeRatio"],
   degenTargetLiquidity: ["opportunity", "targetLiquidity"],
   solMode: ["management", "solMode"],
+  insuranceEnabled: ["management", "insuranceEnabled"],
+  insurancePct: ["management", "insurancePct"],
+  insuranceTriggerFraction: ["management", "insuranceTriggerFraction"],
   minSolToOpen: ["management", "minSolToOpen"],
   deployAmountSol: ["management", "deployAmountSol"],
   gasReserve: ["management", "gasReserve"],
@@ -688,6 +691,48 @@ const PROTECTED_TOOLS = new Set([
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Self-funded insurance pool — a small % of every deploy (management.
+ * insurancePct) is skimmed to CASH at deploy time (see tools/dlmm.js's
+ * deployPosition()) and held aside in the same wallet. It's POOLED, not
+ * per-position: one position's own skim is far too small (~$0.17 on a
+ * typical deploy) to matter against a real ~$7-20 loss on its own — the
+ * mechanism only works because most positions never draw on it, so it
+ * accumulates across many deploys (~47 wins per big loss, historically)
+ * before a severe loss draws on the aggregate.
+ *
+ * Sizing/derivation: see the plan that introduced this (win/loss
+ * occurrence data from lessons.json — 47.3 wins per big loss, six sizing
+ * methods landing 0.25%-0.6%, rounded up to 1% for swap-fee headroom).
+ */
+
+/** Live CASH balance in the wallet — the pool IS this balance, no separate running counter to keep in sync. */
+async function getInsurancePoolBalance() {
+  const { tokens } = await getWalletBalances();
+  const cashEntry = (tokens || []).find((t) => t.mint === config.tokens.CASH);
+  return Number(cashEntry?.usd ?? cashEntry?.balance) || 0;
+}
+
+/**
+ * How much (if anything) to draw from the pooled insurance balance at
+ * close, given this position's outcome. Only a severe loss (pnl_pct at or
+ * below stopLossPct * triggerFraction) draws anything — draws enough to
+ * bring this position back to breakeven, capped at whatever the pool
+ * actually holds (cold-start: right after enabling this feature, before
+ * ~47 wins have accumulated, a severe loss may only be partially covered).
+ * Exported for unit testing — pure, no I/O.
+ */
+export function computeInsuranceWithdraw({ poolUsd, pnlUsd, pnlPct, stopLossPct, triggerFraction }) {
+  if (!poolUsd || poolUsd <= 0) return 0; // zero-insurance guard — nothing accumulated yet
+  if (pnlUsd == null || pnlPct == null) return 0; // can't evaluate without a real PnL result
+
+  const triggerPct = Number(stopLossPct) * Number(triggerFraction ?? 0.5);
+  if (pnlPct <= triggerPct) {
+    return Math.min(poolUsd, Math.abs(pnlUsd));
+  }
+  return 0; // any non-severe outcome (win, mild loss) — let the pool keep accumulating
+}
+
+/**
  * Swap a base token back to SOL with retry. Jupiter can transiently fail (no route,
  * quote error) and a single attempt silently leaves the token unsold — this retries
  * with a delay, re-fetching the balance each attempt (amounts can shift on partial
@@ -768,7 +813,7 @@ export async function executeTool(name, args) {
       if (name === "swap_token" && result.tx) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
-        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
+        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: result.amount_y ?? args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee, insuranceUsd: result.insurance_usdc_amount }).catch(() => {});
         recordDeploy({
           position_id: result.position,
           pool_address: result.pool ?? args.pool_address ?? null,
@@ -811,7 +856,6 @@ export async function executeTool(name, args) {
         // getDeterministicCloseRule, or a trailing-TP note) before the LLM is
         // ever invoked — no LLM call involved in producing this text.
         const closeReason = result.close_reason ?? args.reason ?? null;
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, solReturned: result.sol_returned, reason: closeReason }).catch(() => {});
         recordClose({
           position_id: args.position_address,
           pool_address: result.pool ?? null,
@@ -864,6 +908,46 @@ export async function executeTool(name, args) {
             if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
           }
         }
+        // Insurance pool settlement — independent of the base-token swap
+        // above (insurance is already CASH, not the base token). Never
+        // touches result.pnl_usd/pnl_pct — those stay the true trading
+        // outcome for Darwin weighting / lesson analysis. Computed BEFORE
+        // notifyClose() so the close message can show the full insurance
+        // flow (contributed / withdrawn / pool remaining) in one message.
+        let insuranceInfo = null;
+        if (config.management.insuranceEnabled) {
+          const tracked = getTrackedPosition(args.position_address);
+          const poolUsd = await getInsurancePoolBalance();
+          const withdrawUsd = computeInsuranceWithdraw({
+            poolUsd,
+            pnlUsd: result.pnl_usd,
+            pnlPct: result.pnl_pct,
+            stopLossPct: config.management.stopLossPct,
+            triggerFraction: config.management.insuranceTriggerFraction,
+          });
+          if (withdrawUsd > 0) {
+            const insuranceSwap = await swapToken({
+              input_mint: config.tokens.CASH,
+              output_mint: config.tokens.SOL,
+              amount: withdrawUsd,
+            });
+            if (insuranceSwap?.success) {
+              setPositionInsuranceSettled(args.position_address, withdrawUsd);
+              insuranceInfo = {
+                contributedUsd: tracked?.insurance_usdc_amount ?? null,
+                withdrawnUsd: withdrawUsd,
+                poolAfterUsd: Math.max(0, poolUsd - withdrawUsd),
+              };
+            } else {
+              log("insurance_warn", `Insurance settle swap failed for ${args.position_address}: ${insuranceSwap?.error || "unknown error"}`);
+              insuranceInfo = { contributedUsd: tracked?.insurance_usdc_amount ?? null, withdrawnUsd: 0, poolAfterUsd: poolUsd };
+            }
+          } else {
+            if (tracked?.insurance_usdc_amount > 0) setPositionInsuranceSettled(args.position_address, 0);
+            insuranceInfo = { contributedUsd: tracked?.insurance_usdc_amount ?? null, withdrawnUsd: 0, poolAfterUsd: poolUsd };
+          }
+        }
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, solReturned: result.sol_returned, reason: closeReason, insurance: insuranceInfo }).catch(() => {});
       } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {
         await swapBaseToSolWithRetry(result.base_mint, "after claim");
       }

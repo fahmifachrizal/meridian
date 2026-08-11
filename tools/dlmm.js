@@ -11,7 +11,7 @@ import {
 } from "@solana/web3.js";
 import BN from "bn.js";
 import bs58 from "bs58";
-import { config, computeDeployAmount, MIN_SAFE_BINS_BELOW } from "../core/config.js";
+import { config, computeDeployAmount, MIN_SAFE_BINS_BELOW, round2 } from "../core/config.js";
 import { log } from "../logger.js";
 import {
   trackPosition,
@@ -25,7 +25,7 @@ import {
 } from "../state/state.js";
 import { recordPerformance } from "../state/lessons.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../state/pool-memory.js";
-import { normalizeMint } from "./wallet.js";
+import { normalizeMint, swapToken, getWalletBalances } from "./wallet.js";
 import { appendDecision } from "../state/decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
 import { getAndClearStagedSignals } from "../state/signal-tracker.js";
@@ -538,7 +538,7 @@ export async function deployPosition({
     amount_y == null && amount_sol == null
       ? computeDeployAmount((await getWalletBalances()).sol)
       : 0;
-  const finalAmountY = Number(amount_y ?? amount_sol ?? fallbackAmountY);
+  let finalAmountY = Number(amount_y ?? amount_sol ?? fallbackAmountY);
   const finalAmountX = Number(amount_x ?? 0);
   if (!Number.isFinite(finalAmountY) || !Number.isFinite(finalAmountX) || finalAmountY < 0 || finalAmountX < 0) {
     throw new Error("Invalid deploy amount: amount_x and amount_y must be valid non-negative numbers.");
@@ -593,6 +593,35 @@ export async function deployPosition({
       },
       message: "DRY RUN — no transaction sent",
     };
+  }
+
+  // Self-funded insurance pool: skim a small % of this deploy to CASH
+  // (Bridge's USD stablecoin, config.tokens.CASH), held aside in the same
+  // wallet, before committing the rest to the LP position. Pooled across
+  // deploys (not self-insured per position) — see computeInsuranceWithdraw()
+  // in executor.js for the close-time draw. A failed skim swap is
+  // non-fatal: deploy the full amount, no insurance for this position,
+  // rather than blocking the deploy entirely.
+  // NOTE: fields/vars below are named "usdc" for historical reasons (this
+  // used USDC before switching to CASH) — they hold CASH amounts now.
+  let insuranceSol = 0;
+  let insuranceUsdcAmount = 0;
+  if (config.management.insuranceEnabled) {
+    const skim = round2(finalAmountY * (config.management.insurancePct / 100));
+    if (skim > 0) {
+      const swapResult = await swapToken({
+        input_mint: config.tokens.SOL,
+        output_mint: config.tokens.CASH,
+        amount: skim,
+      });
+      if (swapResult?.success) {
+        insuranceSol = skim;
+        insuranceUsdcAmount = Number(swapResult.amount_out) || 0;
+        finalAmountY = round2(finalAmountY - skim);
+      } else {
+        log("insurance_warn", `Insurance skim swap failed, deploying full amount: ${swapResult?.error || "unknown error"}`);
+      }
+    }
   }
 
   const isWideRange = totalBins > 69;
@@ -714,6 +743,8 @@ export async function deployPosition({
           entry_volume,
           entry_holders,
           stop_loss_pct_override,
+          insurance_sol: insuranceSol,
+          insurance_usdc_amount: insuranceUsdcAmount,
         });
       }
 
@@ -761,6 +792,8 @@ export async function deployPosition({
         wide_range: isWideRange,
         amount_x: finalAmountX,
         amount_y: finalAmountY,
+        insurance_sol: insuranceSol,
+        insurance_usdc_amount: insuranceUsdcAmount,
         txs: normalizeExecutionSignatures(submit),
       };
     } catch (error) {
@@ -857,6 +890,8 @@ export async function deployPosition({
       entry_volume,
       entry_holders,
       stop_loss_pct_override,
+      insurance_sol: insuranceSol,
+      insurance_usdc_amount: insuranceUsdcAmount,
     });
 
     appendDecision({
@@ -901,6 +936,8 @@ export async function deployPosition({
       wide_range: isWideRange,
       amount_x: finalAmountX,
       amount_y: finalAmountY,
+      insurance_sol: insuranceSol,
+      insurance_usdc_amount: insuranceUsdcAmount,
       txs: txHashes,
     };
   } catch (error) {
