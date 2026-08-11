@@ -123,6 +123,26 @@ export async function getWalletBalances() {
 }
 
 /**
+ * Live insurance-token (config.tokens.INSURANCE_TOKEN) USD balance in the
+ * wallet — the insurance pool IS this balance, no separate running counter
+ * to keep in sync. Shared by dlmm.js (deploy-time cap check) and
+ * executor.js (close-time withdrawal) to avoid a circular import between
+ * the two (dlmm.js can't import from executor.js).
+ *
+ * Deliberately does NOT fall back to entry.balance (the raw token amount)
+ * when Helius can't price the token — balance is denominated in the
+ * insurance token itself (e.g. JitoSOL units, ~$97 each), not USD, so
+ * treating it as USD would silently misvalue the pool by ~2 orders of
+ * magnitude. Fail safe to 0 instead: an unpriced pool reads as empty
+ * (no withdrawal fires, no deploy-time cap block) rather than wrong.
+ */
+export async function getInsurancePoolBalance() {
+  const { tokens } = await getWalletBalances();
+  const entry = (tokens || []).find((t) => t.mint === config.tokens.INSURANCE_TOKEN);
+  return Number(entry?.usd) || 0;
+}
+
+/**
  * Swap tokens via Jupiter Swap API V2 (order → sign → execute).
  */
 const SOL_MINT = "So11111111111111111111111111111111111111112";

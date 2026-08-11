@@ -168,7 +168,7 @@ export const config = {
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
     // Self-funded insurance pool: a small % of every deploy is swapped to
-    // CASH and held aside in the same wallet (never touches deploy sizing —
+    // tokens.INSURANCE_TOKEN and held aside in the same wallet (never touches deploy sizing —
     // computeDeployAmount() only reads .sol). Pooled, not per-position:
     // most positions never draw on it, so it accumulates across many
     // deploys and only a severe loss (stopLossPct * insuranceTriggerFraction)
@@ -177,6 +177,11 @@ export const config = {
     insuranceEnabled:          u.insuranceEnabled          ?? false,
     insurancePct:              u.insurancePct              ?? 1,
     insuranceTriggerFraction:  u.insuranceTriggerFraction  ?? 0.5,
+    // Deploy-time cap: stop skimming once the pool reaches this % of the
+    // estimated total portfolio (wallet SOL + all open positions' SOL-
+    // equivalent value) — a backstop shouldn't itself become a large,
+    // unbounded slice of the portfolio.
+    insuranceMaxPoolPct:       u.insuranceMaxPoolPct       ?? 30,
   },
 
   // ─── Strategy Mapping ───────────────────
@@ -221,11 +226,16 @@ export const config = {
     SOL:  "So11111111111111111111111111111111111111112",
     USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-    // Bridge-issued USD stablecoin (Token-2022) — used by the insurance
-    // pool (management.insurance*) instead of USDC. Verified via Jupiter's
-    // asset API before use: isVerified=true, "stable" tag, ~$119M mcap,
-    // ~471K holders, ~$1.00 price.
-    CASH: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+    // JitoSOL (Jito Staked SOL) — the token the insurance pool
+    // (management.insurance*) is held in. Deliberately SOL-tracking, not
+    // USD-stable: the pool earns staking yield and the withdrawal swap
+    // back to SOL is near-1:1, at the cost of losing the "holds its USD
+    // value during a SOL crash" hedge a stablecoin would have provided —
+    // an explicit operator tradeoff (previously CASH, a USD stablecoin;
+    // see git history if you need to revert). Verified via Jupiter's asset
+    // API before use: isVerified=true, "original-lst"/"verified"/"yield"
+    // tags, ~186.9K holders, ~$750M liquidity, freeze authority disabled.
+    INSURANCE_TOKEN: "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn",
   },
 
   // ─── HiveMind ─────────────────────────

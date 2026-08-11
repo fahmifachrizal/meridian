@@ -9,7 +9,7 @@ import {
   closePosition,
   searchPools,
 } from "./dlmm.js";
-import { getWalletBalances, swapToken } from "./wallet.js";
+import { getWalletBalances, swapToken, getInsurancePoolBalance } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../state/lessons.js";
 import { setPositionInstruction, setPositionInsuranceSettled, getTrackedPosition } from "../state/state.js";
@@ -386,6 +386,7 @@ export const CONFIG_MAP = {
   insuranceEnabled: ["management", "insuranceEnabled"],
   insurancePct: ["management", "insurancePct"],
   insuranceTriggerFraction: ["management", "insuranceTriggerFraction"],
+  insuranceMaxPoolPct: ["management", "insuranceMaxPoolPct"],
   minSolToOpen: ["management", "minSolToOpen"],
   deployAmountSol: ["management", "deployAmountSol"],
   gasReserve: ["management", "gasReserve"],
@@ -692,7 +693,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Self-funded insurance pool — a small % of every deploy (management.
- * insurancePct) is skimmed to CASH at deploy time (see tools/dlmm.js's
+ * insurancePct) is skimmed to config.tokens.INSURANCE_TOKEN at deploy time (see tools/dlmm.js's
  * deployPosition()) and held aside in the same wallet. It's POOLED, not
  * per-position: one position's own skim is far too small (~$0.17 on a
  * typical deploy) to matter against a real ~$7-20 loss on its own — the
@@ -705,31 +706,42 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * methods landing 0.25%-0.6%, rounded up to 1% for swap-fee headroom).
  */
 
-/** Live CASH balance in the wallet — the pool IS this balance, no separate running counter to keep in sync. */
-async function getInsurancePoolBalance() {
-  const { tokens } = await getWalletBalances();
-  const cashEntry = (tokens || []).find((t) => t.mint === config.tokens.CASH);
-  return Number(cashEntry?.usd ?? cashEntry?.balance) || 0;
-}
-
 /**
  * How much (if anything) to draw from the pooled insurance balance at
- * close, given this position's outcome. Only a severe loss (pnl_pct at or
- * below stopLossPct * triggerFraction) draws anything — draws enough to
- * bring this position back to breakeven, capped at whatever the pool
- * actually holds (cold-start: right after enabling this feature, before
- * ~47 wins have accumulated, a severe loss may only be partially covered).
- * Exported for unit testing — pure, no I/O.
+ * close, given this position's outcome. `contributedUsd` is THIS position's
+ * own insured skim (tracked.insurance_usdc_amount) — used as the reference
+ * amount for the profit/mild-loss tiers below, even though the actual draw
+ * always comes from the aggregate pool. Rules (p = pnl_pct):
+ *   1. p >= 1%              -> 0 (keep everything, pool grows)
+ *   2. 0% <= p < 1%          -> top up the shortfall vs this position's own
+ *                               contribution: contributedUsd - pnlUsd
+ *                               (net result: this position "made" exactly
+ *                               its own contribution, same as if insurance
+ *                               had never skimmed it in the first place)
+ *   3. mild loss (trigger < p < 0%) -> withdraw this position's own
+ *                               contribution in full (not netted)
+ *   4. severe loss (p <= trigger)   -> cover the loss, capped at pool
+ *   5. pool is empty          -> 0, always (checked first, short-circuits)
+ * All draws are capped at the live pool balance. Exported for unit
+ * testing — pure, no I/O.
  */
-export function computeInsuranceWithdraw({ poolUsd, pnlUsd, pnlPct, stopLossPct, triggerFraction }) {
-  if (!poolUsd || poolUsd <= 0) return 0; // zero-insurance guard — nothing accumulated yet
+export function computeInsuranceWithdraw({ poolUsd, pnlUsd, pnlPct, contributedUsd, stopLossPct, triggerFraction }) {
+  if (!poolUsd || poolUsd <= 0) return 0; // rule 5 — zero-insurance guard, nothing accumulated yet
   if (pnlUsd == null || pnlPct == null) return 0; // can't evaluate without a real PnL result
 
-  const triggerPct = Number(stopLossPct) * Number(triggerFraction ?? 0.5);
-  if (pnlPct <= triggerPct) {
-    return Math.min(poolUsd, Math.abs(pnlUsd));
+  const contributed = Number(contributedUsd) || 0;
+
+  if (pnlPct >= 0) {
+    if (pnlPct >= 1) return 0; // rule 1
+    const shortfall = Math.max(0, contributed - pnlUsd); // rule 2
+    return Math.min(poolUsd, shortfall);
   }
-  return 0; // any non-severe outcome (win, mild loss) — let the pool keep accumulating
+
+  const triggerPct = Number(stopLossPct) * Number(triggerFraction ?? 0.5);
+  if (pnlPct > triggerPct) {
+    return Math.min(poolUsd, contributed); // rule 3 — mild loss
+  }
+  return Math.min(poolUsd, Math.abs(pnlUsd)); // rule 4 — severe loss: cover the loss, capped at pool
 }
 
 /**
@@ -909,7 +921,7 @@ export async function executeTool(name, args) {
           }
         }
         // Insurance pool settlement — independent of the base-token swap
-        // above (insurance is already CASH, not the base token). Never
+        // above (insurance is already the insurance token, not the base token). Never
         // touches result.pnl_usd/pnl_pct — those stay the true trading
         // outcome for Darwin weighting / lesson analysis. Computed BEFORE
         // notifyClose() so the close message can show the full insurance
@@ -918,16 +930,17 @@ export async function executeTool(name, args) {
         if (config.management.insuranceEnabled) {
           const tracked = getTrackedPosition(args.position_address);
           const poolUsd = await getInsurancePoolBalance();
-          const withdrawUsd = computeInsuranceWithdraw({
+          const withdrawUsd = round2(computeInsuranceWithdraw({
             poolUsd,
             pnlUsd: result.pnl_usd,
             pnlPct: result.pnl_pct,
+            contributedUsd: tracked?.insurance_usdc_amount ?? 0,
             stopLossPct: config.management.stopLossPct,
             triggerFraction: config.management.insuranceTriggerFraction,
-          });
+          }));
           if (withdrawUsd > 0) {
             const insuranceSwap = await swapToken({
-              input_mint: config.tokens.CASH,
+              input_mint: config.tokens.INSURANCE_TOKEN,
               output_mint: config.tokens.SOL,
               amount: withdrawUsd,
             });
@@ -936,7 +949,7 @@ export async function executeTool(name, args) {
               insuranceInfo = {
                 contributedUsd: tracked?.insurance_usdc_amount ?? null,
                 withdrawnUsd: withdrawUsd,
-                poolAfterUsd: Math.max(0, poolUsd - withdrawUsd),
+                poolAfterUsd: round2(Math.max(0, poolUsd - withdrawUsd)),
               };
             } else {
               log("insurance_warn", `Insurance settle swap failed for ${args.position_address}: ${insuranceSwap?.error || "unknown error"}`);

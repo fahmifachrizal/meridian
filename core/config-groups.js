@@ -110,6 +110,7 @@ export const KEY_GROUPS = {
   insuranceEnabled: "management",
   insurancePct: "management",
   insuranceTriggerFraction: "management",
+  insuranceMaxPoolPct: "management",
 
   // ── strategy ──
   strategy: "strategy",
