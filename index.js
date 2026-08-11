@@ -718,6 +718,10 @@ STEPS:
      goal's requested amount — if insurance is enabled a small slice is
      skimmed to the pool before the LP deposit, so the actual deployed
      amount can be slightly less than what was requested.
+   - If the tool result's insurance_usdc_amount is present and > 0, add
+     one line "insured $<insurance_usdc_amount>" right after the
+     ◎<deploy amount> line. Omit this line entirely if insurance is 0
+     or not present — do not print "insured $0".
 
    market  fee/tvl <x>% · vol $<x> · tvl $<x> · volat <x>
    token   organic <x> · mcap $<x> · age <x>h

@@ -44,7 +44,7 @@ const TIMEFRAME_MINUTES = {
   "24h": 1440,
 };
 import { log, logAction } from "../logger.js";
-import { notifyDeploy, notifyClose, notifySwap, notifyConfigChange, notifyInsuranceSettled } from "../integrations/telegram.js";
+import { notifyDeploy, notifyClose, notifySwap, notifyConfigChange } from "../integrations/telegram.js";
 
 function numberOrNull(value) {
   const n = Number(value);
@@ -813,7 +813,7 @@ export async function executeTool(name, args) {
       if (name === "swap_token" && result.tx) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
-        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
+        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: result.amount_y ?? args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee, insuranceUsd: result.insurance_usdc_amount }).catch(() => {});
         recordDeploy({
           position_id: result.position,
           pool_address: result.pool ?? args.pool_address ?? null,
@@ -856,7 +856,6 @@ export async function executeTool(name, args) {
         // getDeterministicCloseRule, or a trailing-TP note) before the LLM is
         // ever invoked — no LLM call involved in producing this text.
         const closeReason = result.close_reason ?? args.reason ?? null;
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, solReturned: result.sol_returned, reason: closeReason }).catch(() => {});
         recordClose({
           position_id: args.position_address,
           pool_address: result.pool ?? null,
@@ -912,7 +911,10 @@ export async function executeTool(name, args) {
         // Insurance pool settlement — independent of the base-token swap
         // above (insurance is already CASH, not the base token). Never
         // touches result.pnl_usd/pnl_pct — those stay the true trading
-        // outcome for Darwin weighting / lesson analysis.
+        // outcome for Darwin weighting / lesson analysis. Computed BEFORE
+        // notifyClose() so the close message can show the full insurance
+        // flow (contributed / withdrawn / pool remaining) in one message.
+        let insuranceInfo = null;
         if (config.management.insuranceEnabled) {
           const tracked = getTrackedPosition(args.position_address);
           const poolUsd = await getInsurancePoolBalance();
@@ -931,19 +933,21 @@ export async function executeTool(name, args) {
             });
             if (insuranceSwap?.success) {
               setPositionInsuranceSettled(args.position_address, withdrawUsd);
-              notifyInsuranceSettled({
-                pair: result.pool_name,
+              insuranceInfo = {
+                contributedUsd: tracked?.insurance_usdc_amount ?? null,
                 withdrawnUsd: withdrawUsd,
-                poolRemainingUsd: Math.max(0, poolUsd - withdrawUsd),
-                solReceived: insuranceSwap.amount_out,
-              }).catch(() => {});
+                poolAfterUsd: Math.max(0, poolUsd - withdrawUsd),
+              };
             } else {
               log("insurance_warn", `Insurance settle swap failed for ${args.position_address}: ${insuranceSwap?.error || "unknown error"}`);
+              insuranceInfo = { contributedUsd: tracked?.insurance_usdc_amount ?? null, withdrawnUsd: 0, poolAfterUsd: poolUsd };
             }
-          } else if (tracked?.insurance_usdc_amount > 0) {
-            setPositionInsuranceSettled(args.position_address, 0);
+          } else {
+            if (tracked?.insurance_usdc_amount > 0) setPositionInsuranceSettled(args.position_address, 0);
+            insuranceInfo = { contributedUsd: tracked?.insurance_usdc_amount ?? null, withdrawnUsd: 0, poolAfterUsd: poolUsd };
           }
         }
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, solReturned: result.sol_returned, reason: closeReason, insurance: insuranceInfo }).catch(() => {});
       } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {
         await swapBaseToSolWithRetry(result.base_mint, "after claim");
       }

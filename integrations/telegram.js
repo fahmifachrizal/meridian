@@ -587,7 +587,7 @@ function fmtPrice(n) {
   return v < 0.0001 ? v.toExponential(3) : v.toFixed(6);
 }
 
-export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, rangeCoverage, binStep, baseFee }) {
+export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, rangeCoverage, binStep, baseFee, insuranceUsd }) {
   if (hasActiveLiveMessage()) return;
   const rows = [
     ["Amount", `◎${amountSol}`],
@@ -600,6 +600,9 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
     rows.push(["Up", fmtPct(rangeCoverage.upside_pct)]);
     rows.push(["Width", fmtPct(rangeCoverage.width_pct)]);
   }
+  // Only shown when the insurance pool is enabled and actually skimmed
+  // something for this deploy (tools/dlmm.js's deployPosition()).
+  if (insuranceUsd > 0) rows.push(["Insured", `$${Number(insuranceUsd).toFixed(2)}`]);
   await sendHTML(
     `🚀 <b>Deployed</b> — <b>${escapeHtml(pair)}</b>\n` +
     htmlTable(rows) +
@@ -608,10 +611,26 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned, reason }) {
+/**
+ * `insurance`, when the pool is enabled for this position, tells the full
+ * receive/withdraw flow in one line rather than a separate message:
+ *   - contributedUsd: what THIS position skimmed in at deploy time
+ *   - withdrawnUsd: what was drawn from the POOLED balance at this close
+ *     (0 for the common case — most closes don't draw anything, see
+ *     computeInsuranceWithdraw() in tools/executor.js)
+ *   - poolAfterUsd: the aggregate wallet insurance balance after this close
+ */
+export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned, reason, insurance }) {
   if (hasActiveLiveMessage()) return;
   const up = (pnlUsd ?? 0) >= 0;
   const sign = up ? "+" : "";
+  let insuranceLine = "";
+  if (insurance && insurance.contributedUsd != null) {
+    const { contributedUsd, withdrawnUsd, poolAfterUsd } = insurance;
+    insuranceLine = withdrawnUsd > 0
+      ? `\n🛟 Insurance: contributed $${contributedUsd.toFixed(2)}, drew $${withdrawnUsd.toFixed(2)} from pool (pool now $${poolAfterUsd.toFixed(2)})`
+      : `\nInsurance: contributed $${contributedUsd.toFixed(2)}, kept (pool now $${poolAfterUsd.toFixed(2)})`;
+  }
   await sendHTML(
     `${up ? "🟢" : "🔴"} <b>Closed</b> — <b>${escapeHtml(pair)}</b>\n` +
     htmlTable([
@@ -619,24 +638,8 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned, reason })
       ["PnL %", `${sign}${(pnlPct ?? 0).toFixed(2)}%`],
       ["Returned", solReturned != null ? `◎${Number(solReturned).toFixed(4)}` : undefined],
     ]) +
-    (reason ? `\nReason: ${escapeHtml(String(reason))}` : "")
-  );
-}
-
-/**
- * Fires only on an actual severe-loss draw from the pooled insurance
- * balance (tools/executor.js's computeInsuranceWithdraw()) — never for the
- * (very common) no-op case, so this doesn't spam a message on every close.
- */
-export async function notifyInsuranceSettled({ pair, withdrawnUsd, poolRemainingUsd, solReceived }) {
-  if (hasActiveLiveMessage()) return;
-  await sendHTML(
-    `🛟 <b>Insurance drawn</b> — <b>${escapeHtml(pair || "position")}</b>\n` +
-    htmlTable([
-      ["Withdrawn", `$${Number(withdrawnUsd ?? 0).toFixed(2)}`],
-      ["Pool left", `$${Number(poolRemainingUsd ?? 0).toFixed(2)}`],
-      ["Received", solReceived != null ? `◎${Number(solReceived).toFixed(4)}` : undefined],
-    ])
+    (reason ? `\nReason: ${escapeHtml(String(reason))}` : "") +
+    insuranceLine
   );
 }
 

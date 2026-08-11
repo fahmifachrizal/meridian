@@ -792,6 +792,8 @@ export async function deployPosition({
         wide_range: isWideRange,
         amount_x: finalAmountX,
         amount_y: finalAmountY,
+        insurance_sol: insuranceSol,
+        insurance_usdc_amount: insuranceUsdcAmount,
         txs: normalizeExecutionSignatures(submit),
       };
     } catch (error) {
@@ -934,6 +936,8 @@ export async function deployPosition({
       wide_range: isWideRange,
       amount_x: finalAmountX,
       amount_y: finalAmountY,
+      insurance_sol: insuranceSol,
+      insurance_usdc_amount: insuranceUsdcAmount,
       txs: txHashes,
     };
   } catch (error) {
