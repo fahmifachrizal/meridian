@@ -63,6 +63,8 @@ export function trackPosition({
   entry_volume = null,
   entry_holders = null,
   stop_loss_pct_override = null,
+  insurance_sol = 0,
+  insurance_usdc_amount = 0,
 }) {
   const state = load();
   state.positions[position] = {
@@ -85,6 +87,13 @@ export function trackPosition({
     entry_volume,
     entry_holders,
     stop_loss_pct_override,
+    // Self-funded insurance pool (see core/config.js's management.insurance*
+    // keys) — this position's own skim, kept for audit even though
+    // close-time settlement draws from the pooled wallet USDC balance, not
+    // strictly this field. insurance_settled_usd stays null until close.
+    insurance_sol,
+    insurance_usdc_amount,
+    insurance_settled_usd: null,
     signal_snapshot: signal_snapshot || null,
     deployed_at: new Date().toISOString(),
     out_of_range_since: null,
@@ -202,6 +211,20 @@ export function setPositionInstruction(position_address, instruction) {
   pos.instruction = sanitizeStoredText(instruction);
   save(state);
   log("state", `Position ${position_address} instruction set: ${pos.instruction}`);
+  return true;
+}
+
+/**
+ * Record how much of the insurance pool was drawn on at this position's
+ * close (0 if none). See computeInsuranceWithdraw() in tools/executor.js.
+ */
+export function setPositionInsuranceSettled(position_address, settledUsd) {
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos) return false;
+  pos.insurance_settled_usd = settledUsd;
+  save(state);
+  log("state", `Position ${position_address} insurance settled: $${settledUsd}`);
   return true;
 }
 

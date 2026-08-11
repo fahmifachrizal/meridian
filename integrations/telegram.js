@@ -623,6 +623,23 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned, reason })
   );
 }
 
+/**
+ * Fires only on an actual severe-loss draw from the pooled insurance
+ * balance (tools/executor.js's computeInsuranceWithdraw()) — never for the
+ * (very common) no-op case, so this doesn't spam a message on every close.
+ */
+export async function notifyInsuranceSettled({ pair, withdrawnUsd, poolRemainingUsd, solReceived }) {
+  if (hasActiveLiveMessage()) return;
+  await sendHTML(
+    `🛟 <b>Insurance drawn</b> — <b>${escapeHtml(pair || "position")}</b>\n` +
+    htmlTable([
+      ["Withdrawn", `$${Number(withdrawnUsd ?? 0).toFixed(2)}`],
+      ["Pool left", `$${Number(poolRemainingUsd ?? 0).toFixed(2)}`],
+      ["Received", solReceived != null ? `◎${Number(solReceived).toFixed(4)}` : undefined],
+    ])
+  );
+}
+
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(

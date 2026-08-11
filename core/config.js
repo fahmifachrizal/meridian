@@ -167,6 +167,16 @@ export const config = {
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
+    // Self-funded insurance pool: a small % of every deploy is swapped to
+    // USDC and held aside in the same wallet (never touches deploy sizing —
+    // computeDeployAmount() only reads .sol). Pooled, not per-position:
+    // most positions never draw on it, so it accumulates across many
+    // deploys and only a severe loss (stopLossPct * insuranceTriggerFraction)
+    // draws from the aggregate pool. Sized from real win/loss occurrence
+    // data (~47 wins per big loss) — see the plan that introduced this.
+    insuranceEnabled:          u.insuranceEnabled          ?? false,
+    insurancePct:              u.insurancePct              ?? 1,
+    insuranceTriggerFraction:  u.insuranceTriggerFraction  ?? 0.5,
   },
 
   // ─── Strategy Mapping ───────────────────

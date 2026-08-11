@@ -107,6 +107,9 @@ export const KEY_GROUPS = {
   trailingDropPct: "management",
   pnlSanityMaxDiffPct: "management",
   solMode: "management",
+  insuranceEnabled: "management",
+  insurancePct: "management",
+  insuranceTriggerFraction: "management",
 
   // ── strategy ──
   strategy: "strategy",

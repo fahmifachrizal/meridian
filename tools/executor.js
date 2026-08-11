@@ -12,7 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../state/lessons.js";
-import { setPositionInstruction } from "../state/state.js";
+import { setPositionInstruction, setPositionInsuranceSettled, getTrackedPosition } from "../state/state.js";
 
 import { getPoolMemory, addPoolNote } from "../state/pool-memory.js";
 import { checkTvlDecline, recordTvlSnapshot } from "../guards/04-tvl-decline.js";
@@ -44,7 +44,7 @@ const TIMEFRAME_MINUTES = {
   "24h": 1440,
 };
 import { log, logAction } from "../logger.js";
-import { notifyDeploy, notifyClose, notifySwap, notifyConfigChange } from "../integrations/telegram.js";
+import { notifyDeploy, notifyClose, notifySwap, notifyConfigChange, notifyInsuranceSettled } from "../integrations/telegram.js";
 
 function numberOrNull(value) {
   const n = Number(value);
@@ -383,6 +383,9 @@ export const CONFIG_MAP = {
   degenTargetFeeRatio: ["opportunity", "targetFeeRatio"],
   degenTargetLiquidity: ["opportunity", "targetLiquidity"],
   solMode: ["management", "solMode"],
+  insuranceEnabled: ["management", "insuranceEnabled"],
+  insurancePct: ["management", "insurancePct"],
+  insuranceTriggerFraction: ["management", "insuranceTriggerFraction"],
   minSolToOpen: ["management", "minSolToOpen"],
   deployAmountSol: ["management", "deployAmountSol"],
   gasReserve: ["management", "gasReserve"],
@@ -688,6 +691,47 @@ const PROTECTED_TOOLS = new Set([
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Self-funded insurance pool — a small % of every deploy (management.
+ * insurancePct) is skimmed to USDC at deploy time (see tools/dlmm.js's
+ * deployPosition()) and held aside in the same wallet. It's POOLED, not
+ * per-position: one position's own skim is far too small (~$0.17 on a
+ * typical deploy) to matter against a real ~$7-20 loss on its own — the
+ * mechanism only works because most positions never draw on it, so it
+ * accumulates across many deploys (~47 wins per big loss, historically)
+ * before a severe loss draws on the aggregate.
+ *
+ * Sizing/derivation: see the plan that introduced this (win/loss
+ * occurrence data from lessons.json — 47.3 wins per big loss, six sizing
+ * methods landing 0.25%-0.6%, rounded up to 1% for swap-fee headroom).
+ */
+
+/** Live USDC balance in the wallet — the pool IS this balance, no separate running counter to keep in sync. */
+async function getInsurancePoolBalance() {
+  const { usdc } = await getWalletBalances();
+  return Number(usdc) || 0;
+}
+
+/**
+ * How much (if anything) to draw from the pooled insurance balance at
+ * close, given this position's outcome. Only a severe loss (pnl_pct at or
+ * below stopLossPct * triggerFraction) draws anything — draws enough to
+ * bring this position back to breakeven, capped at whatever the pool
+ * actually holds (cold-start: right after enabling this feature, before
+ * ~47 wins have accumulated, a severe loss may only be partially covered).
+ * Exported for unit testing — pure, no I/O.
+ */
+export function computeInsuranceWithdraw({ poolUsd, pnlUsd, pnlPct, stopLossPct, triggerFraction }) {
+  if (!poolUsd || poolUsd <= 0) return 0; // zero-insurance guard — nothing accumulated yet
+  if (pnlUsd == null || pnlPct == null) return 0; // can't evaluate without a real PnL result
+
+  const triggerPct = Number(stopLossPct) * Number(triggerFraction ?? 0.5);
+  if (pnlPct <= triggerPct) {
+    return Math.min(poolUsd, Math.abs(pnlUsd));
+  }
+  return 0; // any non-severe outcome (win, mild loss) — let the pool keep accumulating
+}
+
+/**
  * Swap a base token back to SOL with retry. Jupiter can transiently fail (no route,
  * quote error) and a single attempt silently leaves the token unsold — this retries
  * with a delay, re-fetching the balance each attempt (amounts can shift on partial
@@ -862,6 +906,41 @@ export async function executeTool(name, args) {
             result.auto_swapped = true;
             result.auto_swap_note = `Base token already auto-swapped back to SOL (${result.base_mint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
             if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
+          }
+        }
+        // Insurance pool settlement — independent of the base-token swap
+        // above (insurance is already USDC, not the base token). Never
+        // touches result.pnl_usd/pnl_pct — those stay the true trading
+        // outcome for Darwin weighting / lesson analysis.
+        if (config.management.insuranceEnabled) {
+          const tracked = getTrackedPosition(args.position_address);
+          const poolUsd = await getInsurancePoolBalance();
+          const withdrawUsd = computeInsuranceWithdraw({
+            poolUsd,
+            pnlUsd: result.pnl_usd,
+            pnlPct: result.pnl_pct,
+            stopLossPct: config.management.stopLossPct,
+            triggerFraction: config.management.insuranceTriggerFraction,
+          });
+          if (withdrawUsd > 0) {
+            const insuranceSwap = await swapToken({
+              input_mint: config.tokens.USDC,
+              output_mint: config.tokens.SOL,
+              amount: withdrawUsd,
+            });
+            if (insuranceSwap?.success) {
+              setPositionInsuranceSettled(args.position_address, withdrawUsd);
+              notifyInsuranceSettled({
+                pair: result.pool_name,
+                withdrawnUsd: withdrawUsd,
+                poolRemainingUsd: Math.max(0, poolUsd - withdrawUsd),
+                solReceived: insuranceSwap.amount_out,
+              }).catch(() => {});
+            } else {
+              log("insurance_warn", `Insurance settle swap failed for ${args.position_address}: ${insuranceSwap?.error || "unknown error"}`);
+            }
+          } else if (tracked?.insurance_usdc_amount > 0) {
+            setPositionInsuranceSettled(args.position_address, 0);
           }
         }
       } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {

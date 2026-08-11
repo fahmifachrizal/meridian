@@ -714,6 +714,10 @@ STEPS:
    - Do NOT calculate the range percentages yourself.
    - Use the actual deploy_position tool result:
      range_coverage.downside_pct / .upside_pct / .width_pct
+   - For "◎<deploy amount>", use the tool result's amount_y, not the
+     goal's requested amount — if insurance is enabled a small slice is
+     skimmed to the pool before the LP deposit, so the actual deployed
+     amount can be slightly less than what was requested.
 
    market  fee/tvl <x>% · vol $<x> · tvl $<x> · volat <x>
    token   organic <x> · mcap $<x> · age <x>h
