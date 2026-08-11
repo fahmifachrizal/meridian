@@ -636,7 +636,7 @@ export async function deployPosition({
         });
         if (swapResult?.success) {
           insuranceSol = skim;
-          insuranceUsdcAmount = Number(swapResult.amount_out) || 0;
+          insuranceUsdcAmount = round2(Number(swapResult.amount_out) || 0);
           finalAmountY = round2(finalAmountY - skim);
         } else {
           log("insurance_warn", `Insurance skim swap failed, deploying full amount: ${swapResult?.error || "unknown error"}`);

@@ -949,7 +949,7 @@ export async function executeTool(name, args) {
               insuranceInfo = {
                 contributedUsd: tracked?.insurance_usdc_amount ?? null,
                 withdrawnUsd: withdrawUsd,
-                poolAfterUsd: Math.max(0, poolUsd - withdrawUsd),
+                poolAfterUsd: round2(Math.max(0, poolUsd - withdrawUsd)),
               };
             } else {
               log("insurance_warn", `Insurance settle swap failed for ${args.position_address}: ${insuranceSwap?.error || "unknown error"}`);
