@@ -940,7 +940,7 @@ export async function executeTool(name, args) {
           }));
           if (withdrawUsd > 0) {
             const insuranceSwap = await swapToken({
-              input_mint: config.tokens.CASH,
+              input_mint: config.tokens.INSURANCE_TOKEN,
               output_mint: config.tokens.SOL,
               amount: withdrawUsd,
             });
