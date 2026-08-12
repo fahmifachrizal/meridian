@@ -965,7 +965,7 @@ export async function executeTool(name, args) {
               };
             } else {
               log("insurance_warn", `Insurance settle swap failed for ${args.position_address}: ${insuranceSwap?.error || "unknown error"}`);
-              insuranceInfo = { contributedUsd: tracked?.insurance_usdc_amount ?? null, withdrawnUsd: 0, poolAfterUsd: poolUsd };
+              insuranceInfo = { contributedUsd: tracked?.insurance_usdc_amount ?? null, withdrawnUsd: 0, poolAfterUsd: poolUsd, failed: true };
             }
           } else {
             if (tracked?.insurance_usdc_amount > 0) setPositionInsuranceSettled(args.position_address, 0);
