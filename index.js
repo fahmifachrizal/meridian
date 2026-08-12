@@ -1648,7 +1648,7 @@ async function telegramHandler(msg) {
         const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
         await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
       } else {
-        await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
+        await sendMessage(`❌ Close failed: ${result.error || result.reason || "unknown error"}`);
       }
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;

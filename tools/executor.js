@@ -779,6 +779,38 @@ async function swapBaseToSolWithRetry(baseMint, label) {
 }
 
 /**
+ * close_position's `reason` is a free-text tool argument the LLM authors —
+ * unlike set_position_note's `instruction`, it was never sanitized before
+ * this, so an LLM that formatted its reason as a JSON object/array instead
+ * of a short phrase (schema-compliant, since it's still technically a
+ * string) flowed straight through into pool-memory notes and the Telegram
+ * close message verbatim. If it parses as JSON, pull a human string out of
+ * it (reason/rule/summary field) rather than displaying the raw blob;
+ * either way, apply the same control-char/`<>`/length cleanup
+ * sanitizeStoredText already applies to instructions. Exported for testing.
+ */
+export function sanitizeCloseReason(reason) {
+  if (reason == null) return null;
+  let text = String(reason).trim();
+  if (text.startsWith("{") || text.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(text);
+      const picked = parsed?.reason ?? parsed?.rule ?? parsed?.summary ?? parsed;
+      text = typeof picked === "string" ? picked : JSON.stringify(picked);
+    } catch {
+      // Looked like JSON but wasn't valid — leave as-is, cleanup below still applies.
+    }
+  }
+  const cleaned = text
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/[<>`]/g, "")
+    .trim()
+    .slice(0, 200);
+  return cleaned || null;
+}
+
+/**
  * Execute a tool call with safety checks and logging.
  */
 export async function executeTool(name, args) {
@@ -786,6 +818,10 @@ export async function executeTool(name, args) {
 
   // Strip model artifacts like "<|channel|>commentary" appended to tool names
   name = name.replace(/<.*$/, "").trim();
+
+  if (name === "close_position" && args && typeof args === "object" && args.reason != null) {
+    args.reason = sanitizeCloseReason(args.reason);
+  }
 
   // ─── Validate tool exists ─────────────────
   const fn = toolMap[name];
