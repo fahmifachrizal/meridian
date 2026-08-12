@@ -619,6 +619,11 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
  *     (0 for the common case — most closes don't draw anything, see
  *     computeInsuranceWithdraw() in tools/executor.js)
  *   - poolAfterUsd: the aggregate wallet insurance balance after this close
+ *   - failed: true if a withdrawal was owed (withdrawUsd > 0) but the
+ *     settle swap itself errored — rendered distinctly from "kept" so a
+ *     real failure is never silently reported as "nothing needed
+ *     withdrawing" (a real bug this fixed: every withdrawal failed
+ *     on-chain but the old message said "kept" either way)
  */
 export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned, reason, insurance }) {
   if (hasActiveLiveMessage()) return;
@@ -626,10 +631,12 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned, reason, i
   const sign = up ? "+" : "";
   let insuranceLine = "";
   if (insurance && insurance.contributedUsd != null) {
-    const { contributedUsd, withdrawnUsd, poolAfterUsd } = insurance;
-    insuranceLine = withdrawnUsd > 0
-      ? `\n🛟 Insurance: contributed $${contributedUsd.toFixed(2)}, drew $${withdrawnUsd.toFixed(2)} from pool (pool now $${poolAfterUsd.toFixed(2)})`
-      : `\nInsurance: contributed $${contributedUsd.toFixed(2)}, kept (pool now $${poolAfterUsd.toFixed(2)})`;
+    const { contributedUsd, withdrawnUsd, poolAfterUsd, failed } = insurance;
+    insuranceLine = failed
+      ? `\n⚠️ Insurance: contributed $${contributedUsd.toFixed(2)}, withdrawal FAILED (pool still $${poolAfterUsd.toFixed(2)}) — check logs`
+      : withdrawnUsd > 0
+        ? `\n🛟 Insurance: contributed $${contributedUsd.toFixed(2)}, drew $${withdrawnUsd.toFixed(2)} from pool (pool now $${poolAfterUsd.toFixed(2)})`
+        : `\nInsurance: contributed $${contributedUsd.toFixed(2)}, kept (pool now $${poolAfterUsd.toFixed(2)})`;
   }
   await sendHTML(
     `${up ? "🟢" : "🔴"} <b>Closed</b> — <b>${escapeHtml(pair)}</b>\n` +

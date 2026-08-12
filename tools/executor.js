@@ -929,7 +929,8 @@ export async function executeTool(name, args) {
         let insuranceInfo = null;
         if (config.management.insuranceEnabled) {
           const tracked = getTrackedPosition(args.position_address);
-          const poolUsd = await getInsurancePoolBalance();
+          const poolInfo = await getInsurancePoolBalance();
+          const poolUsd = poolInfo.usd;
           const withdrawUsd = round2(computeInsuranceWithdraw({
             poolUsd,
             pnlUsd: result.pnl_usd,
@@ -939,11 +940,22 @@ export async function executeTool(name, args) {
             triggerFraction: config.management.insuranceTriggerFraction,
           }));
           if (withdrawUsd > 0) {
-            const insuranceSwap = await swapToken({
-              input_mint: config.tokens.INSURANCE_TOKEN,
-              output_mint: config.tokens.SOL,
-              amount: withdrawUsd,
-            });
+            // swapToken()'s `amount` means native units of input_mint, NOT
+            // USD — withdrawUsd is a dollar figure, so convert it through
+            // the pool's own usd/balance ratio before swapping. Passing
+            // withdrawUsd straight through here was the actual bug behind
+            // every "Insufficient funds" withdrawal failure: a $15 request
+            // was read as "sell 15 JitoSOL" (~$1500) against a wallet that
+            // only held ~$15 of it.
+            const priceUsd = poolInfo.balance > 0 ? poolInfo.usd / poolInfo.balance : 0;
+            const swapAmountToken = priceUsd > 0 ? withdrawUsd / priceUsd : 0;
+            const insuranceSwap = swapAmountToken > 0
+              ? await swapToken({
+                  input_mint: config.tokens.INSURANCE_TOKEN,
+                  output_mint: config.tokens.SOL,
+                  amount: swapAmountToken,
+                })
+              : { success: false, error: "cannot price insurance token (pool balance/price unavailable)" };
             if (insuranceSwap?.success) {
               setPositionInsuranceSettled(args.position_address, withdrawUsd);
               insuranceInfo = {
@@ -953,7 +965,7 @@ export async function executeTool(name, args) {
               };
             } else {
               log("insurance_warn", `Insurance settle swap failed for ${args.position_address}: ${insuranceSwap?.error || "unknown error"}`);
-              insuranceInfo = { contributedUsd: tracked?.insurance_usdc_amount ?? null, withdrawnUsd: 0, poolAfterUsd: poolUsd };
+              insuranceInfo = { contributedUsd: tracked?.insurance_usdc_amount ?? null, withdrawnUsd: 0, poolAfterUsd: poolUsd, failed: true };
             }
           } else {
             if (tracked?.insurance_usdc_amount > 0) setPositionInsuranceSettled(args.position_address, 0);
