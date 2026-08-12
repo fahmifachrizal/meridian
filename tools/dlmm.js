@@ -615,11 +615,12 @@ export async function deployPosition({
       // estimated total portfolio (wallet SOL + all open positions'
       // SOL-equivalent value) — a backstop shouldn't itself become an
       // unbounded slice of the portfolio.
-      const [poolUsd, { sol: walletSol, sol_price: solPrice }, myPositions] = await Promise.all([
+      const [poolInfo, { sol: walletSol, sol_price: solPrice }, myPositions] = await Promise.all([
         getInsurancePoolBalance(),
         getWalletBalances(),
         getMyPositions({ silent: true }).catch(() => ({ positions: [] })),
       ]);
+      const poolUsd = poolInfo.usd;
       const positionsUsd = (myPositions?.positions || []).reduce(
         (sum, p) => sum + (Number(p.total_value_true_usd ?? p.total_value_usd) || 0), 0
       );

@@ -123,23 +123,36 @@ export async function getWalletBalances() {
 }
 
 /**
- * Live insurance-token (config.tokens.INSURANCE_TOKEN) USD balance in the
+ * Live insurance-token (config.tokens.INSURANCE_TOKEN) balance in the
  * wallet — the insurance pool IS this balance, no separate running counter
  * to keep in sync. Shared by dlmm.js (deploy-time cap check) and
  * executor.js (close-time withdrawal) to avoid a circular import between
  * the two (dlmm.js can't import from executor.js).
  *
- * Deliberately does NOT fall back to entry.balance (the raw token amount)
- * when Helius can't price the token — balance is denominated in the
- * insurance token itself (e.g. JitoSOL units, ~$97 each), not USD, so
- * treating it as USD would silently misvalue the pool by ~2 orders of
- * magnitude. Fail safe to 0 instead: an unpriced pool reads as empty
- * (no withdrawal fires, no deploy-time cap block) rather than wrong.
+ * Returns BOTH usd (the pool's USD value, for the withdrawal-rule math)
+ * and balance (native token units, e.g. JitoSOL count) — a caller that
+ * needs to actually swap a USD amount back to SOL must convert via
+ * usd/balance first; passing a USD figure straight into swapToken()'s
+ * `amount` (which means "native units of the input mint") silently asks
+ * to sell ~100x too much (a real bug this fixed: a $15 withdrawal request
+ * was passed as "sell 15 JitoSOL", worth ~$1500, against a wallet that
+ * only held ~$15 of it — every such withdrawal failed with "Insufficient
+ * funds").
+ *
+ * usd deliberately does NOT fall back to entry.balance when Helius can't
+ * price the token — balance is denominated in the insurance token itself,
+ * not USD, so treating it as USD would silently misvalue the pool by ~2
+ * orders of magnitude. Fails safe to {usd: 0, balance: 0} instead: an
+ * unpriced pool reads as empty (no withdrawal fires, no deploy-time cap
+ * block) rather than wrong.
  */
 export async function getInsurancePoolBalance() {
   const { tokens } = await getWalletBalances();
   const entry = (tokens || []).find((t) => t.mint === config.tokens.INSURANCE_TOKEN);
-  return Number(entry?.usd) || 0;
+  return {
+    usd: Number(entry?.usd) || 0,
+    balance: Number(entry?.balance) || 0,
+  };
 }
 
 /**
@@ -184,11 +197,12 @@ export async function swapToken({
     const connection = getConnection();
 
     // ─── Convert to smallest unit ──────────────────────────────
-    let decimals = 9; // SOL default
-    if (input_mint !== config.tokens.SOL) {
-      const mintInfo = await connection.getParsedAccountInfo(new PublicKey(input_mint));
-      decimals = mintInfo.value?.data?.parsed?.info?.decimals ?? 9;
-    }
+    const getMintDecimals = async (mint) => {
+      if (mint === config.tokens.SOL) return 9;
+      const mintInfo = await connection.getParsedAccountInfo(new PublicKey(mint));
+      return mintInfo.value?.data?.parsed?.info?.decimals ?? 9;
+    };
+    const decimals = await getMintDecimals(input_mint);
     const amountStr = Math.floor(amount * Math.pow(10, decimals)).toString();
 
     // ─── Get Swap V2 order (unsigned tx + requestId) ───────────
@@ -252,13 +266,19 @@ export async function swapToken({
       );
     }
 
+    // Swap V2's execute response reports inputAmountResult/outputAmountResult
+    // in raw base (atomic) units, same as a quote's inAmount/outAmount — NOT
+    // human-decimal token amounts. Convert both back to decimal here so
+    // every caller of swapToken() gets a real amount, not a raw integer.
+    const outputDecimals = await getMintDecimals(output_mint);
+
     return {
       success: true,
       tx: result.signature,
       input_mint,
       output_mint,
-      amount_in: result.inputAmountResult,
-      amount_out: result.outputAmountResult,
+      amount_in: Number(result.inputAmountResult) / Math.pow(10, decimals),
+      amount_out: Number(result.outputAmountResult) / Math.pow(10, outputDecimals),
       referral_account: referralParams?.referralAccount || null,
       referral_fee_bps_requested: referralParams?.referralFee || 0,
       fee_bps_applied: order.feeBps ?? null,
