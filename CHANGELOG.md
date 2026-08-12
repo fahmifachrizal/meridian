@@ -7,6 +7,76 @@ version tags exist in this repo's history, so dates are the anchor.
 
 ---
 
+## 2026-08-11/12 — Self-funded pooled insurance backstop
+
+New opt-in feature: a small % of every deploy is skimmed to a separate
+token and held aside in the same wallet as a shared loss backstop, sized
+from real win/loss occurrence data (47.3 wins per big loss, historically)
+rather than a per-position self-insurance guess.
+
+- **Pooled, not per-position** — `management.insurancePct` (default 1%) is
+  skimmed at deploy time before the LP deposit; a severe loss draws on the
+  *aggregate* wallet balance, capped at whatever's accumulated, since one
+  position's own skim (~$0.17 typical) can't meaningfully offset a real
+  ~$7–20 loss on its own.
+- **5-tier withdrawal rules** (`computeInsuranceWithdraw()`, reworked from
+  an initial single-severe-loss-only version): profit ≥1% keeps everything;
+  0–1% profit tops up the shortfall vs. this position's own contribution;
+  a mild loss (worse than 0, better than `stopLossPct × triggerFraction`)
+  withdraws the position's own contribution in full; a severe loss covers
+  the loss capped at the pool; an empty pool never withdraws.
+- **Deploy-time pool cap** (`insuranceMaxPoolPct`, default 30%) — stops
+  growing the pool once it already holds that share of the estimated total
+  portfolio (wallet SOL + all open positions' value), so a backstop can't
+  itself become an unbounded slice of holdings.
+- **Token switched twice**: USDC → CASH (Bridge's USD stablecoin, verified
+  via Jupiter's asset API before wiring in) → JitoSOL (an explicit
+  operator tradeoff: the pool now tracks SOL price and earns staking
+  yield instead of holding USD value through a SOL crash).
+- **Two real unit bugs found and fixed after pulling live VPS data**,
+  verified against actual on-chain transactions via Solana RPC:
+  1. `swapToken()` returned Jupiter Swap V2's raw atomic units without
+     converting to decimal token amounts — a swap that delivered
+     `0.752897` CASH was recorded as `752897`.
+  2. The real cause of every "Insufficient funds" withdrawal failure in
+     production: a dollar-denominated withdrawal amount was passed
+     directly as `swapToken()`'s `amount`, which means *native token
+     units*, not USD — a ~$15 withdrawal was read as "sell 15 JitoSOL"
+     (~$1500) against a wallet holding ~$15 of it. Every withdrawal on the
+     VPS had been failing silently until this fix; the Telegram close
+     message was also fixed to say "withdrawal FAILED" instead of
+     rendering a failed swap identically to "nothing needed withdrawing".
+- Telegram notifications extended to show the insured amount at deploy
+  time and the full contribute/withdraw/pool-remaining flow at close.
+
+## 2026-08-10 — Deploy-amount rounding fix, hallucinated reports, briefing HTML escaping
+
+Root-caused why the VPS had stopped deploying and why a morning briefing
+(and manual `/briefing`) went silently unanswered — two unrelated bugs
+found via live VPS log analysis:
+
+- **Deploy-amount rounding rejection loop**: `computeDeployAmount()`'s
+  `.toFixed(2)` could round a regime-adjusted amount down (e.g.
+  `0.7 × 0.85` → `"0.59"`) while the safety check compared it against the
+  raw unrounded config floor (`≈0.59499999999999997`), rejecting every
+  deploy by less than half a cent. Fixed with a shared `round2()` helper
+  applied to both sides of every SOL-amount floor/ceiling comparison. This
+  also explained an OpenRouter usage spike the same day — the SCREENER
+  kept re-evaluating the same 2–3 candidates that repeatedly failed the
+  mismatched check.
+- **Hallucinated deploy reports**: the SCREENER LLM could write "🚀
+  DEPLOYED" text even when `deploy_position` had actually failed, and the
+  Telegram report forwarded it verbatim. Now overridden with a
+  deterministic failure report whenever `deploySucceeded` is false,
+  regardless of what the LLM's own text claimed.
+- **Briefing HTML escaping**: a lesson's `rule` text containing raw `<=`
+  broke Telegram's HTML parser, silently dropping the entire briefing
+  message — both the scheduled 1am briefing and on-demand `/briefing`
+  share this code path, explaining both symptoms at once. Fixed by
+  escaping lesson text before interpolation.
+- Added a deterministic, non-LLM `reason` field to close notifications,
+  sourced from `result.close_reason`.
+
 ## 2026-07-31 — Guard extraction + folder reorganization
 
 Major refactor, no behavior change — reorganizes code, doesn't change what
