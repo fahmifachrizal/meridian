@@ -638,8 +638,10 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, solReturned, reason, i
         ? `\n🛟 Insurance: contributed $${contributedUsd.toFixed(2)}, drew $${withdrawnUsd.toFixed(2)} from pool (pool now $${poolAfterUsd.toFixed(2)})`
         : `\nInsurance: contributed $${contributedUsd.toFixed(2)}, kept (pool now $${poolAfterUsd.toFixed(2)})`;
   }
+  const badgeLine = `${up ? "🟢 WIN" : "🔴 LOSS"} · ${sign}${(pnlPct ?? 0).toFixed(2)}%`;
   await sendHTML(
     `${up ? "🟢" : "🔴"} <b>Closed</b> — <b>${escapeHtml(pair)}</b>\n` +
+    `${badgeLine}\n` +
     htmlTable([
       ["PnL", `${sign}$${(pnlUsd ?? 0).toFixed(2)}`],
       ["PnL %", `${sign}${(pnlPct ?? 0).toFixed(2)}%`],

@@ -21,6 +21,7 @@ import {
   fmtAge,
   positionBlock,
   noDeployReport,
+  deployedReport,
 } from "../integrations/telegram-format.js";
 
 const suite = createSuite("telegram-format — safe, compact messages");
@@ -145,6 +146,52 @@ section("noDeployReport");
   check("plain mode emits no HTML tags at all", !/<[a-z/]/i.test(plain));
   check("plain mode keeps the same structure", plain.includes("best  X-SOL") && plain.includes("• A — bad"));
   check("plain mode does not double-escape", !noDeployReport({ best: "a&b", html: false }).includes("&amp;"));
+}
+
+section("deployedReport");
+{
+  const base = {
+    poolName: "nosis-SOL", poolAddress: "C889ex3M6dDecsxjAAudiLjhdeKgehbLm4zK9wV3nX8N",
+    amountSol: 0.58, strategy: "bid_ask", activeBin: -433,
+    priceRange: { min: 0.0000234, max: 0.0000267 },
+    rangeCoverage: { downside_pct: 29.41, upside_pct: 0, width_pct: 41.66 },
+    insuranceUsd: 0.01,
+    feeTvlRatio: 6.83, volume: 2364.81, tvl: 73290.24, organicScore: 81,
+    mcap: 980190, ageHours: 5,
+    top10Pct: 12, botsPct: 3, smartWalletNames: [],
+    why: "Strong organic score with real volume.",
+    position: "5mk2asBH5QagtHEoDvBbxkfG58mBkX4yuwjPZ6r76qwD",
+    tx: "5WhbTUs3psfX8KEUsnnWpBJRaSU37y9W7XojRMDdcSz7ybj4zp9Qh16GdjTBtXuTRxHc96SxELWE3aErQmeQo33K",
+  };
+  const r = deployedReport(base);
+  check("has a bold deployed header naming the pool", r.includes("🚀 <b>Deployed</b> — <b>nosis-SOL</b>"));
+  check("moderate organic score gets the moderate-conviction badge", r.includes("🟡 MODERATE CONVICTION"));
+  check("shows the score in the badge line", r.includes("Score 81"));
+  check("wraps the metrics in a <pre> block (Telegram's native copy affordance)", /<pre>[\s\S]*<\/pre>/.test(r));
+  check("shows the deploy amount", r.includes("◎0.58"));
+  check("shows the insured amount", r.includes("Insured") && r.includes("$0.01"));
+  check("shows the why line", r.includes("why  Strong organic score"));
+  check("shows a truncated position id", r.includes("5mk2asBH"));
+  check("shows a truncated tx id", r.includes("5WhbTUs3psfX8KE"));
+
+  check("omits the Insured row when insurance is 0", !deployedReport({ ...base, insuranceUsd: 0 }).includes("Insured"));
+
+  const high = deployedReport({ ...base, organicScore: 90 });
+  check("high organic score gets the high-conviction badge", high.includes("🟢 HIGH CONVICTION"));
+  const low = deployedReport({ ...base, organicScore: 40 });
+  check("low organic score gets the low-conviction badge", low.includes("🟠 LOW CONVICTION"));
+  const noScore = deployedReport({ ...base, organicScore: null });
+  check("missing organic score omits the conviction badge entirely", !/CONVICTION/.test(noScore));
+
+  check("escapes an untrusted pool name", deployedReport({ ...base, poolName: "<b>evil</b>" }).includes("&lt;b&gt;"));
+  check("escapes an untrusted why line", deployedReport({ ...base, why: "<script>1</script>" }).includes("&lt;script&gt;"));
+
+  const sparse = deployedReport({ poolName: "X-SOL", amountSol: 0.5 });
+  check("sparse input renders without crashing", typeof sparse === "string" && sparse.length > 0);
+  check("sparse input doesn't emit 'undefined'", !sparse.includes("undefined"));
+
+  check("smart wallet names are listed when present", deployedReport({ ...base, smartWalletNames: ["alpha1", "alpha2"] }).includes("alpha1, alpha2"));
+  check("'none' shown when no smart wallets present", r.includes("none"));
 }
 
 section("escapeHtml");
