@@ -926,6 +926,10 @@ guards/
   01-token-age-window.js       through
   07-avoid-pin.js              — the 7 post-mortem safety guards, one file
                                  per guard, numbered by execution order
+  08-weekend-fresh-repeat.js   — caps a token to one deploy per Sat 18:00->
+                                 Mon 04:00 WIB session if it started fresh
+                                 (<weekendGuardMaxFreshAgeHours old) that
+                                 session; see CHANGELOG for the data behind it
 
 util/
   envcrypt.js         .env encryption
