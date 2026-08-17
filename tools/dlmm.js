@@ -473,6 +473,7 @@ export async function deployPosition({
   entry_volume,
   entry_holders,
   stop_loss_pct_override,
+  pool_age_hours,
 }) {
   pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
@@ -749,6 +750,7 @@ export async function deployPosition({
           position: positionAddress,
           pool: pool_address,
           pool_name,
+          base_mint: baseMint,
           strategy: activeStrategy,
           bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
           bin_step,
@@ -767,6 +769,7 @@ export async function deployPosition({
           stop_loss_pct_override,
           insurance_sol: insuranceSol,
           insurance_usdc_amount: insuranceUsdcAmount,
+          pool_age_hours_at_deploy: pool_age_hours ?? null,
         });
       }
 
@@ -896,6 +899,7 @@ export async function deployPosition({
       position: newPosition.publicKey.toString(),
       pool: pool_address,
       pool_name,
+      base_mint: baseMint,
       strategy: activeStrategy,
       bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
       bin_step,
@@ -914,6 +918,7 @@ export async function deployPosition({
       stop_loss_pct_override,
       insurance_sol: insuranceSol,
       insurance_usdc_amount: insuranceUsdcAmount,
+      pool_age_hours_at_deploy: pool_age_hours ?? null,
     });
 
     appendDecision({

@@ -9,6 +9,7 @@ import { repoPath } from "../repo-root.js";
 import { createSuite, withRestoredFile } from "./lib/test-kit.js";
 import { getTokenAgeWindowRejectReason } from "../guards/01-token-age-window.js";
 import { checkRejectionHysteresis } from "../guards/03-rejection-hysteresis.js";
+import { getWeekendSessionBoundsWIB, isWeekendNightWIB, getWeekendFreshRepeatRejectReason } from "../guards/08-weekend-fresh-repeat.js";
 import {
   recordRejection,
   getRecentRejectionCount,
@@ -101,5 +102,63 @@ withRestoredFile(POOL_MEMORY_FILE, () => {
   check("mild ~8% decline stays under 20% cap — deploy allowed", mildDeclinePct < 20);
 });
 console.log("  (restored pool-memory.json to pre-test content)");
+
+// ─── Guard #8: weekend fresh-token repeat block ─────────────────
+section("Guard #8: weekend fresh-token repeat block (Sat 18:00 -> Mon 04:00 WIB)");
+{
+  const s = { weekendGuardEnabled: true, weekendGuardMaxFreshAgeHours: 6, weekendGuardStartDow: 6, weekendGuardStartHour: 18, weekendGuardEndDow: 1, weekendGuardEndHour: 4 };
+  // Build a Date whose WIB (UTC+7) wall-clock reads y-m-d h:mi.
+  const wib = (y, m, d, h, mi = 0) => new Date(Date.UTC(y, m - 1, d, h, mi) - 7 * 3_600_000);
+
+  section("getWeekendSessionBoundsWIB / isWeekendNightWIB");
+  {
+    const satNight = wib(2026, 8, 15, 20, 0); // Sat 20:00 WIB
+    const { start, end } = getWeekendSessionBoundsWIB(satNight, s);
+    check("session starts Sat 18:00 WIB", start.getTime() === wib(2026, 8, 15, 18, 0).getTime());
+    check("session ends Mon 04:00 WIB", end.getTime() === wib(2026, 8, 17, 4, 0).getTime());
+
+    check("Sat 20:00 WIB is in the window", isWeekendNightWIB(satNight, s));
+    check("Sun 03:00 WIB (early hours) is in the window", isWeekendNightWIB(wib(2026, 8, 16, 3, 0), s));
+    check("Mon 03:00 WIB (still before 04:00 cutoff) is in the window", isWeekendNightWIB(wib(2026, 8, 17, 3, 0), s));
+    check("Mon 05:00 WIB (past the cutoff) is NOT in the window", !isWeekendNightWIB(wib(2026, 8, 17, 5, 0), s));
+    check("Wed 12:00 WIB (midweek) is NOT in the window", !isWeekendNightWIB(wib(2026, 8, 19, 12, 0), s));
+    check("Fri 23:00 WIB (before the Sat 18:00 open) is NOT in the window", !isWeekendNightWIB(wib(2026, 8, 14, 23, 0), s));
+  }
+
+  section("getWeekendFreshRepeatRejectReason");
+  {
+    const now = wib(2026, 8, 15, 20, 24); // matches WORM-SOL's real 3rd-leg time
+    const baseMint = "TEST_GUARD_MINT_DO_NOT_USE";
+
+    check("disabled -> always allowed", getWeekendFreshRepeatRejectReason({ now, baseMint, priorDeploysThisSession: [{ pool_age_hours_at_deploy: 1 }], s: { ...s, weekendGuardEnabled: false } }) === null);
+    check("no base_mint -> allowed (fails open)", getWeekendFreshRepeatRejectReason({ now, baseMint: null, priorDeploysThisSession: [{ pool_age_hours_at_deploy: 1 }], s }) === null);
+
+    const midweekNow = wib(2026, 8, 19, 12, 0);
+    check("outside the weekend window -> allowed regardless of history", getWeekendFreshRepeatRejectReason({ now: midweekNow, baseMint, priorDeploysThisSession: [{ pool_age_hours_at_deploy: 0.5 }], s }) === null);
+
+    check("first deploy this session (no prior history) -> allowed", getWeekendFreshRepeatRejectReason({ now, baseMint, priorDeploysThisSession: [], s }) === null);
+
+    const priorNotFresh = [{ pool_age_hours_at_deploy: 8.2, deployed_at: "2026-08-15T18:30:00Z" }];
+    check("prior deploy existed but started >6h old -> allowed (that token was never 'fresh' this session)", getWeekendFreshRepeatRejectReason({ now, baseMint, priorDeploysThisSession: priorNotFresh, s }) === null);
+
+    // WORM-SOL's actual shape: 2 prior legs, the first (0.77h old) was fresh.
+    const wormPriors = [
+      { pool_age_hours_at_deploy: 0.77, deployed_at: "2026-08-15T18:28:00Z" },
+      { pool_age_hours_at_deploy: 0.99, deployed_at: "2026-08-15T19:04:00Z" },
+    ];
+    const wormReason = getWeekendFreshRepeatRejectReason({ now, baseMint, priorDeploysThisSession: wormPriors, s });
+    check("a prior fresh-session-open deploy blocks the repeat", wormReason !== null);
+    check("reject reason names the trigger", wormReason.includes("weekend fresh-repeat guard"));
+
+    // SalaryCat-SOL's actual shape: repeat itself is 7.84h old (past the 6h
+    // cutoff), but the session-opening deploy was 4.37h old — must still block.
+    const salaryCatPriors = [
+      { pool_age_hours_at_deploy: 4.37, deployed_at: "2026-07-27T00:02:00Z" },
+      { pool_age_hours_at_deploy: 5.85, deployed_at: "2026-07-27T02:14:00Z" },
+    ];
+    const salaryCatReason = getWeekendFreshRepeatRejectReason({ now: wib(2026, 7, 27, 3, 19), baseMint, priorDeploysThisSession: salaryCatPriors, s });
+    check("locked-in freshness still blocks even once the repeat itself has aged past 6h", salaryCatReason !== null);
+  }
+}
 
 process.exit(suite.finish());

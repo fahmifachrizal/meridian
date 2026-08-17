@@ -12,11 +12,12 @@ import {
 import { getWalletBalances, swapToken, getInsurancePoolBalance } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../state/lessons.js";
-import { setPositionInstruction, setPositionInsuranceSettled, getTrackedPosition } from "../state/state.js";
+import { setPositionInstruction, setPositionInsuranceSettled, getTrackedPosition, getTrackedPositions } from "../state/state.js";
 
 import { getPoolMemory, addPoolNote } from "../state/pool-memory.js";
 import { checkTvlDecline, recordTvlSnapshot } from "../guards/04-tvl-decline.js";
 import { computeDeployTaper } from "../guards/05-repeat-deploy-taper.js";
+import { getWeekendFreshRepeatRejectReason, getWeekendSessionBoundsWIB } from "../guards/08-weekend-fresh-repeat.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../state/strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../state/token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../state/dev-blocklist.js";
@@ -387,6 +388,12 @@ export const CONFIG_MAP = {
   insurancePct: ["management", "insurancePct"],
   insuranceTriggerFraction: ["management", "insuranceTriggerFraction"],
   insuranceMaxPoolPct: ["management", "insuranceMaxPoolPct"],
+  weekendGuardEnabled: ["management", "weekendGuardEnabled"],
+  weekendGuardMaxFreshAgeHours: ["management", "weekendGuardMaxFreshAgeHours"],
+  weekendGuardStartDow: ["management", "weekendGuardStartDow"],
+  weekendGuardStartHour: ["management", "weekendGuardStartHour"],
+  weekendGuardEndDow: ["management", "weekendGuardEndDow"],
+  weekendGuardEndHour: ["management", "weekendGuardEndHour"],
   minSolToOpen: ["management", "minSolToOpen"],
   deployAmountSol: ["management", "deployAmountSol"],
   gasReserve: ["management", "gasReserve"],
@@ -1043,6 +1050,28 @@ async function runSafetyChecks(name, args) {
       const poolThresholds = await validateDeployPoolThresholds(args);
       if (!poolThresholds.pass) return poolThresholds;
       if (poolThresholds.entryMarketData) Object.assign(args, poolThresholds.entryMarketData);
+
+      // Guard #8 — weekend fresh-token repeat block (see
+      // guards/08-weekend-fresh-repeat.js). Only relevant Sat 18:00 -> Mon
+      // 04:00 WIB by default; fails open outside that window or if
+      // base_mint is unknown.
+      if (config.management.weekendGuardEnabled && args.base_mint) {
+        const now = new Date();
+        const { start: sessionStart } = getWeekendSessionBoundsWIB(now, config.management);
+        const priorDeploysThisSession = getTrackedPositions(false).filter((p) =>
+          p.base_mint === args.base_mint &&
+          p.deployed_at &&
+          new Date(p.deployed_at) >= sessionStart &&
+          new Date(p.deployed_at) < now
+        );
+        const weekendReason = getWeekendFreshRepeatRejectReason({
+          now,
+          baseMint: args.base_mint,
+          priorDeploysThisSession,
+          s: config.management,
+        });
+        if (weekendReason) return { pass: false, reason: weekendReason };
+      }
 
       // Reject pools with bin_step out of configured range
       const minStep = config.screening.minBinStep;

@@ -182,6 +182,20 @@ export const config = {
     // equivalent value) — a backstop shouldn't itself become a large,
     // unbounded slice of the portfolio.
     insuranceMaxPoolPct:       u.insuranceMaxPoolPct       ?? 30,
+
+    // Guard #8 — weekend fresh-token repeat block (see guards/08-weekend-
+    // fresh-repeat.js for the data behind this). Caps a base_mint to one
+    // deploy per weekend session, but only when that token's FIRST deploy
+    // the session was into a pool under weekendGuardMaxFreshAgeHours old —
+    // locked in at session-open, not re-checked per repeat, since the
+    // catastrophic legs this guards against are often already >6h old by
+    // the time they fire. Window default: Sat 18:00 -> Mon 04:00 WIB.
+    weekendGuardEnabled:         u.weekendGuardEnabled         ?? true,
+    weekendGuardMaxFreshAgeHours: u.weekendGuardMaxFreshAgeHours ?? 6,
+    weekendGuardStartDow:        u.weekendGuardStartDow        ?? 6, // Saturday
+    weekendGuardStartHour:       u.weekendGuardStartHour       ?? 18,
+    weekendGuardEndDow:          u.weekendGuardEndDow          ?? 1, // Monday
+    weekendGuardEndHour:         u.weekendGuardEndHour         ?? 4,
   },
 
   // ─── Strategy Mapping ───────────────────

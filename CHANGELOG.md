@@ -7,6 +7,73 @@ version tags exist in this repo's history, so dates are the anchor.
 
 ---
 
+## 2026-08-17 — Weekend fresh-token repeat guard (guard #8)
+
+Data-driven safety guard, built from a pattern-analysis session across the
+full closed-position history (734 positions). Findings that motivated it:
+
+- Losses during Sat 18:00 → Mon 04:00 WIB aren't more *frequent* than the
+  rest of the week (~33% either way), but they're **~4-5x more severe on
+  average** (−4.84% vs. −1.14%), and this ~12%-of-the-week window accounts
+  for a third of all-time big losses (≥15%).
+- Every major weekend blowup checked (WORM-SOL −44.21%, SalaryCat-SOL
+  −35.96%, Apu-SOL −20.71%, CALICO-SOL −10.05%, Frock-SOL −9.79%) followed
+  the same shape: one or two small wins on a pool that was **under 6 hours
+  old** at deploy, then a repeat deploy into the same `base_mint` that gave
+  everything back and then some.
+- `smart_wallets_present` was checked as a candidate signal and **retired
+  immediately** — 0 of 742 positions in history ever had it `true`, so it's
+  a base-rate artifact of memecoin screening, not a discriminating signal.
+- Simulated against history: capping a `base_mint` to one deploy per
+  weekend session, but only counting it as "capped" when that token's
+  *first* deploy the session started under a 6h freshness cutoff (not
+  re-checked on the repeat — SalaryCat's fatal leg was 7.84h old by the
+  time it fired, well past 6h, but the session-opening deploy was 4.37h),
+  turned the weekend-night dataset from a **$35.79 net loss into a $5.14
+  net gain** — better than either a blanket "one deploy per token, any
+  age" rule (+$36.67) or a naive per-leg freshness recheck (+$25.86, which
+  misses SalaryCat's case specifically).
+
+**Guard #8** (`guards/08-weekend-fresh-repeat.js`) implements exactly that:
+pure `getWeekendSessionBoundsWIB()`/`isWeekendNightWIB()` for the WIB
+window math, `getWeekendFreshRepeatRejectReason()` for the decision. Wired
+into `tools/executor.js`'s `runSafetyChecks()` for `deploy_position`,
+reusing `pool_age_hours`/`base_mint` that `validateDeployPoolThresholds()`
+already fetches fresh before every deploy (zero extra network calls) and
+`state/state.js`'s `getTrackedPositions(false)` for same-session history.
+Two new fields on `state.json` position records make the "was it fresh at
+session-open" check possible going forward: `base_mint` (wasn't stored at
+all before this) and `pool_age_hours_at_deploy`. Five new config keys under
+`management.weekendGuard*`, defaulting to enabled with the exact validated
+window (Sat 18:00 → Mon 04:00 WIB, 6h freshness cutoff).
+
+## 2026-08-11-17 — Telegram redesign: deterministic deploy/close cards
+
+The LLM-authored "🚀 DEPLOYED" report — hand-formatted numbers, prone to
+the same drift/hallucination class of bug PR #8 already fixed once — is
+replaced with `deployedReport()` (`integrations/telegram-format.js`): a
+deterministic card built entirely from `deploy_position`'s own tool result
+and the winning candidate's recon data, following the same pattern
+`noDeployReport()` already established. Adds a conviction badge line
+(derived from `organic_score`: 🟢 HIGH ≥85, 🟡 MODERATE ≥70, 🟠 LOW below)
+and an aligned `<pre>` metrics block, which Telegram renders with its
+native copy affordance. The SCREENER prompt is simplified accordingly —
+the LLM now supplies only a one-line "why" instead of hand-formatting an
+entire report. The "LLM chose no deploy" case is also routed through
+`noDeployReport()` for the same visual consistency the hallucination-
+override case already had. `notifyClose()` gets a matching 🟢 WIN / 🔴 LOSS
+badge line, and a failed insurance withdrawal now renders distinctly
+("⚠️ withdrawal FAILED") instead of looking identical to "nothing needed
+withdrawing" — a real accuracy gap, since every withdrawal had in fact
+been failing silently on the VPS until the unit-bug fixes below.
+
+Also this window: `close_position`'s `reason` argument is now sanitized
+(`sanitizeCloseReason()`, `tools/executor.js`) — an LLM that formatted its
+close reason as a JSON object instead of a short phrase (schema-valid,
+since it's still technically a string) was flowing straight through into
+pool-memory notes and the Telegram message verbatim; fixed after the
+operator reported receiving raw JSON as a "close reason" in production.
+
 ## 2026-08-11/12 — Self-funded pooled insurance backstop
 
 New opt-in feature: a small % of every deploy is skimmed to a separate
