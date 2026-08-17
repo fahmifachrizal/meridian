@@ -522,6 +522,14 @@ export async function deployPosition({
     activeBinsAbove = Math.max(0, upperBinId - activeBin.binId);
   }
 
+  // Deterministic 10% downside safety margin, applied here rather than left
+  // to the LLM's own bins_below formula so it can never be skipped or
+  // miscalculated. Extra cushion against a position drifting into an OOR
+  // wait before the OOR-wait/fast-exit rules can act — the pattern-analysis
+  // session that motivated this found "sat OOR the full wait, then closed"
+  // positions averaging -1.33% by the time they finally fired.
+  activeBinsBelow = Math.round(activeBinsBelow * 1.10);
+
   const strategyMap = {
     spot: StrategyType.Spot,
     curve: StrategyType.Curve,
@@ -553,11 +561,20 @@ export async function deployPosition({
   const isSingleSidedSol = finalAmountX <= 0 && finalAmountY > 0;
   if (isSingleSidedSol && (Number(bins_above ?? 0) > 0 || Number(upside_pct ?? 0) > 0)) {
     throw new Error(
-      "Single-side SOL deploy cannot use bins_above or upside_pct. Use amount_y with bins_below only; the upper bin is the SDK active bin.",
+      "Single-side SOL deploy cannot request a custom bins_above/upside_pct. Upside headroom is fixed at 10% of bins_below — do not pass bins_above/upside_pct.",
     );
   }
   if (isSingleSidedSol) {
-    activeBinsAbove = 0;
+    // Deterministic 10% upside headroom, not the old hard 0. amount_x stays
+    // 0, so these upper bins get zero real liquidity — confirmed against
+    // @meteora-ag/dlmm's toAmountAskSide: a zero totalAmount produces
+    // zero-amount entries for every bin, no error, no token-price exposure
+    // added. This only widens the tracked range so a pump doesn't
+    // immediately trip "pumped far above range" while still profitable.
+    // (Pattern-analysis finding: 41% of all closes were exactly that
+    // structural trigger, capping a winning position at ~21 minutes held
+    // because the old range had zero upside room at all.)
+    activeBinsAbove = Math.round(activeBinsBelow * 0.10);
   }
   activeBinsBelow = Number(activeBinsBelow);
   activeBinsAbove = Number(activeBinsAbove);
@@ -649,15 +666,10 @@ export async function deployPosition({
 
   const isWideRange = totalBins > 69;
   const minBinId = activeBin.binId - activeBinsBelow;
-  const maxBinId = isSingleSidedSol ? activeBin.binId : activeBin.binId + activeBinsAbove;
+  const maxBinId = activeBin.binId + activeBinsAbove;
 
   if (minBinId > maxBinId) {
     throw new Error(`Invalid bin range: ${minBinId} -> ${maxBinId}`);
-  }
-  if (isSingleSidedSol && maxBinId !== activeBin.binId) {
-    throw new Error(
-      `Single-side SOL deploy must end at the SDK active bin. Expected ${activeBin.binId}, got ${maxBinId}.`,
-    );
   }
 
   await assertRangeDoesNotRequireBinArrayInitialization(pool, minBinId, maxBinId);

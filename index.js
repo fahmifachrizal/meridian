@@ -699,8 +699,10 @@ STEPS:
 3. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
    bins_below = round(${config.strategy.minBinsBelow} + (candidate volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}].
    pass deploy_position.volatility = the candidate volatility value.
-   For single-side SOL deploys, do not invent upside:
-   set amount_y only, keep amount_x = 0, keep bins_above = 0, and let the upper bin stay at the active bin.
+   For single-side SOL deploys, do not request a custom upside:
+   set amount_y only, keep amount_x = 0, and do not pass bins_above/upside_pct —
+   a fixed 10% upside headroom is applied automatically (still zero real
+   token exposure, since amount_x stays 0; it only widens the tracked range).
 4. If you deploy, report in this exact format — the full metrics card is
    generated automatically from the tool result afterward, so this is only
    a one-line marker plus your own reasoning, not a data report:

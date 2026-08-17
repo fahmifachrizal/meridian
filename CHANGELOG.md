@@ -7,6 +7,52 @@ version tags exist in this repo's history, so dates are the anchor.
 
 ---
 
+## 2026-08-17 — OOR pattern analysis + range/timer re-strategizing
+
+Data-driven analysis of the full closed-position history (726 positions
+with range data): 51% of all positions go out-of-range at some point, and
+55.8% of all closes are OOR-triggered — but that split into three very
+different failure modes once broken down by close reason:
+
+- `pumped_above` (price shot past the range) — **41% of ALL closes**,
+  averaging +0.48% held only ~21 min. Root cause: every deploy used
+  `bins_above = 0` (hardcoded, single-sided SOL), so *any* upward move
+  exited the position immediately, capping every winner at a small,
+  early gain regardless of how strong the move was.
+- `oor_wait_timer` (drifted, sat OOR the full 30-minute wait) — 14.2% of
+  closes, averaging **-1.33%** having spent two-thirds of their held time
+  already out of range before the timer finally fired. This is genuinely
+  wasted capital, not a directional bet.
+- Volatility-scaled range sizing was checked and is *not* the problem —
+  range efficiency is actually slightly better at higher volatility
+  (69.6% at volat 0-3 vs 79.3% at volat 10-20), so that formula is doing
+  its job; the two failure modes above are structural, not a sizing bug.
+
+Three changes shipped from this:
+
+- **`outOfRangeWaitMinutes`: 30 -> 20.** The OOR-wait rule was already
+  duration-only (no PnL gate), so tightening this single threshold
+  directly targets the costly `oor_wait_timer` bucket — no strategy-risk
+  tradeoff, positions just get freed up sooner instead of drifting dead
+  for the full 30 minutes.
+- **Deterministic 10% downside padding** (`tools/dlmm.js`) — `bins_below`
+  is now widened by 10% after all existing clamping, applied in code
+  rather than left to the LLM's own formula, so it can't be skipped or
+  miscalculated.
+- **Deterministic 10% upside headroom for single-sided SOL deploys** —
+  previously hard-blocked by two redundant safety throws forcing
+  `bins_above = 0`. Verified against `@meteora-ag/dlmm`'s own
+  `toAmountAskSide` source before touching this (not guessed): with
+  `amount_x` staying 0, a range extending above the active bin produces
+  zero-amount entries for every upper bin — no error, no real token-price
+  exposure added, it only widens the tracked range so a pump doesn't
+  immediately trip `pumped_above` while the position is still gaining.
+  `bins_above`/`upside_pct` requests from the LLM are still rejected (the
+  10% figure is fixed, not LLM-chosen); a wider total range does mean
+  volatile-token deploys will hit the >69-bin wide-range multi-tx path
+  somewhat more often than before, which that path already exists to
+  handle safely.
+
 ## 2026-08-17 — Weekend fresh-token repeat guard (guard #8)
 
 Data-driven safety guard, built from a pattern-analysis session across the

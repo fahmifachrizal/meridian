@@ -518,7 +518,7 @@ All fields are optional — defaults shown. Edit `user-config.json`.
 | `maxDeployAmount` | `50` | Maximum SOL cap per position |
 | `gasReserve` | `0.2` | Minimum SOL to keep for gas |
 | `minSolToOpen` | `0.55` | Minimum wallet SOL before opening |
-| `outOfRangeWaitMinutes` | `30` | Minutes OOR before acting |
+| `outOfRangeWaitMinutes` | `20` | Minutes OOR before acting |
 | `stopLossPct` | `-15` | Close position if price drops by this % |
 | `takeProfitPct` | `5` | Close when fees earned reach this % of capital |
 | `trailingTakeProfit` | `true` | Enable trailing take-profit |
