@@ -47,6 +47,7 @@ export function trackPosition({
   position,
   pool,
   pool_name,
+  base_mint = null,
   strategy,
   bin_range = {},
   amount_sol,
@@ -65,12 +66,14 @@ export function trackPosition({
   stop_loss_pct_override = null,
   insurance_sol = 0,
   insurance_usdc_amount = 0,
+  pool_age_hours_at_deploy = null,
 }) {
   const state = load();
   state.positions[position] = {
     position,
     pool,
     pool_name,
+    base_mint,
     strategy,
     bin_range,
     amount_sol,
@@ -87,6 +90,10 @@ export function trackPosition({
     entry_volume,
     entry_holders,
     stop_loss_pct_override,
+    // Guard #8 (guards/08-weekend-fresh-repeat.js) — the pool's own age at
+    // this deploy, so a later repeat this weekend session can check whether
+    // THIS deploy was the one that started the token off fresh.
+    pool_age_hours_at_deploy,
     // Self-funded insurance pool (see core/config.js's management.insurance*
     // keys) — this position's own skim, kept for audit even though
     // close-time settlement draws from the pooled wallet CASH balance, not

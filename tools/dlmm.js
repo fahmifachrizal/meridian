@@ -473,6 +473,7 @@ export async function deployPosition({
   entry_volume,
   entry_holders,
   stop_loss_pct_override,
+  pool_age_hours,
 }) {
   pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
@@ -521,6 +522,14 @@ export async function deployPosition({
     activeBinsAbove = Math.max(0, upperBinId - activeBin.binId);
   }
 
+  // Deterministic 10% downside safety margin, applied here rather than left
+  // to the LLM's own bins_below formula so it can never be skipped or
+  // miscalculated. Extra cushion against a position drifting into an OOR
+  // wait before the OOR-wait/fast-exit rules can act — the pattern-analysis
+  // session that motivated this found "sat OOR the full wait, then closed"
+  // positions averaging -1.33% by the time they finally fired.
+  activeBinsBelow = Math.round(activeBinsBelow * 1.10);
+
   const strategyMap = {
     spot: StrategyType.Spot,
     curve: StrategyType.Curve,
@@ -556,6 +565,13 @@ export async function deployPosition({
     );
   }
   if (isSingleSidedSol) {
+    // The 10% top headroom tried this session backtested net NEGATIVE
+    // against a 316-position real-price replay (test/lib/benchmark-eval.js
+    // Tier 2, scripts/evaluate-config.js --fixture=market
+    // --compare-headroom): under the live config's stop-loss, delaying a
+    // pumped-above-range exit sometimes rides the position into a worse
+    // stop-loss instead of capturing extra upside, net -$26.69 across 184
+    // deployed positions. Reverted — see CHANGELOG.
     activeBinsAbove = 0;
   }
   activeBinsBelow = Number(activeBinsBelow);
@@ -648,15 +664,10 @@ export async function deployPosition({
 
   const isWideRange = totalBins > 69;
   const minBinId = activeBin.binId - activeBinsBelow;
-  const maxBinId = isSingleSidedSol ? activeBin.binId : activeBin.binId + activeBinsAbove;
+  const maxBinId = activeBin.binId + activeBinsAbove;
 
   if (minBinId > maxBinId) {
     throw new Error(`Invalid bin range: ${minBinId} -> ${maxBinId}`);
-  }
-  if (isSingleSidedSol && maxBinId !== activeBin.binId) {
-    throw new Error(
-      `Single-side SOL deploy must end at the SDK active bin. Expected ${activeBin.binId}, got ${maxBinId}.`,
-    );
   }
 
   await assertRangeDoesNotRequireBinArrayInitialization(pool, minBinId, maxBinId);
@@ -749,6 +760,7 @@ export async function deployPosition({
           position: positionAddress,
           pool: pool_address,
           pool_name,
+          base_mint: baseMint,
           strategy: activeStrategy,
           bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
           bin_step,
@@ -767,6 +779,7 @@ export async function deployPosition({
           stop_loss_pct_override,
           insurance_sol: insuranceSol,
           insurance_usdc_amount: insuranceUsdcAmount,
+          pool_age_hours_at_deploy: pool_age_hours ?? null,
         });
       }
 
@@ -896,6 +909,7 @@ export async function deployPosition({
       position: newPosition.publicKey.toString(),
       pool: pool_address,
       pool_name,
+      base_mint: baseMint,
       strategy: activeStrategy,
       bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
       bin_step,
@@ -914,6 +928,7 @@ export async function deployPosition({
       stop_loss_pct_override,
       insurance_sol: insuranceSol,
       insurance_usdc_amount: insuranceUsdcAmount,
+      pool_age_hours_at_deploy: pool_age_hours ?? null,
     });
 
     appendDecision({

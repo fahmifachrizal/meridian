@@ -113,6 +113,75 @@ export function positionBlock(p, { unit = "◎", action = null } = {}) {
   return lines.filter(Boolean).join("\n");
 }
 
+function fmtPctPlain(value, digits = 2) {
+  const n = toNumber(value);
+  return Number.isFinite(n) ? `${n.toFixed(digits)}%` : "?";
+}
+
+function fmtPriceRange(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "?";
+  return v < 0.0001 ? v.toExponential(3) : v.toFixed(6);
+}
+
+/**
+ * The "deployed" report — built here, deterministically, for the same
+ * reason noDeployReport() is: an LLM asked to hand-format an aligned
+ * metrics table drifts (padding, units, invented numbers) over time in a
+ * way a template can't. Every number comes from deploy_position's own tool
+ * result or the winning candidate's own recon data, never re-derived by
+ * the LLM. `why` is the one piece of genuine LLM synthesis left — a short
+ * opinion sentence, not a data point, so a bad format there can't corrupt
+ * the numbers around it.
+ */
+export function deployedReport({
+  poolName, poolAddress, amountSol, strategy, activeBin,
+  priceRange, rangeCoverage, insuranceUsd,
+  feeTvlRatio, volume, tvl, organicScore, mcap, ageHours,
+  top10Pct, botsPct, smartWalletNames,
+  why, position, tx,
+} = {}) {
+  const org = toNumber(organicScore);
+  const conviction = !Number.isFinite(org) ? null
+    : org >= 85 ? "🟢 HIGH CONVICTION"
+    : org >= 70 ? "🟡 MODERATE CONVICTION"
+    : "🟠 LOW CONVICTION";
+  const badgeLine = [
+    conviction,
+    Number.isFinite(org) ? `Score ${org}` : null,
+    ageHours != null ? `${fmtAge(Number(ageHours) * 60)} old` : null,
+  ].filter(Boolean).join(" · ");
+
+  const rows = [
+    ["Amount", fmtAmount(amountSol, "◎")],
+    insuranceUsd > 0 ? ["Insured", fmtAmount(insuranceUsd, "$")] : null,
+    strategy ? ["Strategy", strategy] : null,
+    activeBin != null ? ["Bin", activeBin] : null,
+    priceRange ? ["Range", `${fmtPriceRange(priceRange.min)} – ${fmtPriceRange(priceRange.max)}`] : null,
+    rangeCoverage ? ["Down", fmtPctPlain(rangeCoverage.downside_pct)] : null,
+    rangeCoverage ? ["Up", fmtPctPlain(rangeCoverage.upside_pct)] : null,
+    rangeCoverage ? ["Width", fmtPctPlain(rangeCoverage.width_pct)] : null,
+    feeTvlRatio != null ? ["Fee/TVL", fmtPctPlain(feeTvlRatio)] : null,
+    volume != null ? ["Vol 24h", fmtAmount(volume, "$", 0)] : null,
+    tvl != null ? ["TVL", fmtAmount(tvl, "$", 0)] : null,
+    mcap != null ? ["MCap", fmtAmount(mcap, "$", 0)] : null,
+    top10Pct != null ? ["Top10", fmtPctPlain(top10Pct)] : null,
+    botsPct != null ? ["Bots", fmtPctPlain(botsPct)] : null,
+    ["Smart $", smartWalletNames?.length ? smartWalletNames.join(", ") : "none"],
+  ].filter(Boolean);
+
+  const lines = [
+    `🚀 <b>Deployed</b> — <b>${escapeHtml(poolName ?? "unknown")}</b>`,
+    badgeLine ? escapeHtml(badgeLine) : null,
+    htmlTable(rows),
+    why ? `why  ${escapeHtml(String(why).trim().slice(0, 200))}` : null,
+    poolAddress ? `Pool <code>${escapeHtml(String(poolAddress).slice(0, 8))}…</code>` : null,
+    position ? `Position <code>${escapeHtml(String(position).slice(0, 8))}…</code>` : null,
+    tx ? `Tx <code>${escapeHtml(String(tx).slice(0, 16))}…</code>` : null,
+  ].filter(Boolean);
+  return safeTruncate(lines.join("\n"));
+}
+
 /**
  * The "no deploy" report. Built here so the JS-generated version and the
  * LLM-prompted template can no longer drift apart — they previously lived in

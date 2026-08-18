@@ -7,6 +7,242 @@ version tags exist in this repo's history, so dates are the anchor.
 
 ---
 
+## 2026-08-18 — Real-price backtest of the 10% upside headroom; reverted
+
+Built out `test/lib/benchmark-eval.js`'s config backtester to actually
+replay the OOR rules (3 and 5) against real minute-level price data,
+instead of falling back to each position's historical outcome whenever
+its recorded `timeline` didn't happen to trip a rule:
+
+- **Tier 1** — `deriveBinTimeline()` reconstructs a per-minute `active_bin`
+  series from the curated 8-position fixture's real `price_ohlcv_1m`,
+  anchored on `bin_range.max` == the active bin at deploy (true
+  historically: every deploy had `bins_above: 0`). `pnl_pct` at each
+  derived tick is interpolated from the sparse recorded `timeline`, not
+  recomputed from bin composition — good enough to answer "would this
+  rule have fired sooner," not to independently verify a pnl curve. On
+  this fixture, isolated to the one usable pumped-above case
+  (brain-SOL), the 10% headroom looked like a clean improvement
+  (+1.27% -> +1.45% at exit) — but the fixture's other 7 positions are
+  mostly blocked at the deploy gate by other guards, so the aggregate
+  couldn't show the effect at all.
+- **Fetched real per-pool OHLCV to fix the sample-size gap** —
+  `scripts/fetch-pool-first-days-ohlcv.js` (already existed, first-3-days
+  cache) went from 187/316 pools cached to 305/316 (11 permanently
+  outside GeckoTerminal's public-API 180-day historical window, now
+  cached with a `permanent` flag so future runs stop retrying them
+  instead of treating it as transient).
+- **Tier 2** — `attachPriceOhlcv()` merges that cache onto the
+  316-position `market-benchmark-positions.json` fixture at runtime
+  (verified: every position with a usable `bin_step` also has
+  `pool_age_hours_at_deploy <= 72`, so the cached first-3-days window
+  always covers its deploy). `scripts/evaluate-config.js --fixture=market
+  --compare-headroom` runs both variants and diffs them.
+
+**Result: the larger sample reversed the Tier 1 read.** Under the live
+config (current `stopLossPct: -15%`), the headroom is net **negative**:
+-$26.69 across 184 deployed positions, 33 of them changed exit. Diagnosed
+(not assumed): the live stop-loss fires very aggressively when replayed
+against these positions' real interim-drawdown timelines — many swing to
+-15/-17% mid-flight before recovering to a real historical win, a
+pre-existing confound of backtesting today's config against old data. It
+dominates the headroom signal. Isolating just the OOR mechanics
+(stop-loss/take-profit disabled) confirms the mechanism itself works —
+net **+$239.73**, win rate 80% -> 87% — but under the *actual* running
+config, delaying a pumped-above exit often rides the position into a
+worse stop-loss instead of capturing the extra upside, and that effect
+wins out in aggregate.
+
+**Reverted the 10% upside headroom** (`tools/dlmm.js`, `index.js`'s
+SCREENER prompt) back to `bins_above = 0` for single-sided SOL deploys —
+the backtest that motivated adding it didn't have the sample size to
+catch this interaction; the backtest that does says it costs money under
+current settings. The 10% *downside* padding from the same session is
+unaffected (it isn't part of this rule's replay) and stays as-is.
+
+## 2026-08-17 — OOR pattern analysis + range/timer re-strategizing
+
+Data-driven analysis of the full closed-position history (726 positions
+with range data): 51% of all positions go out-of-range at some point, and
+55.8% of all closes are OOR-triggered — but that split into three very
+different failure modes once broken down by close reason:
+
+- `pumped_above` (price shot past the range) — **41% of ALL closes**,
+  averaging +0.48% held only ~21 min. Root cause: every deploy used
+  `bins_above = 0` (hardcoded, single-sided SOL), so *any* upward move
+  exited the position immediately, capping every winner at a small,
+  early gain regardless of how strong the move was.
+- `oor_wait_timer` (drifted, sat OOR the full 30-minute wait) — 14.2% of
+  closes, averaging **-1.33%** having spent two-thirds of their held time
+  already out of range before the timer finally fired. This is genuinely
+  wasted capital, not a directional bet.
+- Volatility-scaled range sizing was checked and is *not* the problem —
+  range efficiency is actually slightly better at higher volatility
+  (69.6% at volat 0-3 vs 79.3% at volat 10-20), so that formula is doing
+  its job; the two failure modes above are structural, not a sizing bug.
+
+Three changes shipped from this:
+
+- **`outOfRangeWaitMinutes`: 30 -> 20.** The OOR-wait rule was already
+  duration-only (no PnL gate), so tightening this single threshold
+  directly targets the costly `oor_wait_timer` bucket — no strategy-risk
+  tradeoff, positions just get freed up sooner instead of drifting dead
+  for the full 30 minutes.
+- **Deterministic 10% downside padding** (`tools/dlmm.js`) — `bins_below`
+  is now widened by 10% after all existing clamping, applied in code
+  rather than left to the LLM's own formula, so it can't be skipped or
+  miscalculated.
+- **Deterministic 10% upside headroom for single-sided SOL deploys** —
+  previously hard-blocked by two redundant safety throws forcing
+  `bins_above = 0`. Verified against `@meteora-ag/dlmm`'s own
+  `toAmountAskSide` source before touching this (not guessed): with
+  `amount_x` staying 0, a range extending above the active bin produces
+  zero-amount entries for every upper bin — no error, no real token-price
+  exposure added, it only widens the tracked range so a pump doesn't
+  immediately trip `pumped_above` while the position is still gaining.
+  `bins_above`/`upside_pct` requests from the LLM are still rejected (the
+  10% figure is fixed, not LLM-chosen); a wider total range does mean
+  volatile-token deploys will hit the >69-bin wide-range multi-tx path
+  somewhat more often than before, which that path already exists to
+  handle safely.
+
+## 2026-08-17 — Weekend fresh-token repeat guard (guard #8)
+
+Data-driven safety guard, built from a pattern-analysis session across the
+full closed-position history (734 positions). Findings that motivated it:
+
+- Losses during Sat 18:00 → Mon 04:00 WIB aren't more *frequent* than the
+  rest of the week (~33% either way), but they're **~4-5x more severe on
+  average** (−4.84% vs. −1.14%), and this ~12%-of-the-week window accounts
+  for a third of all-time big losses (≥15%).
+- Every major weekend blowup checked (WORM-SOL −44.21%, SalaryCat-SOL
+  −35.96%, Apu-SOL −20.71%, CALICO-SOL −10.05%, Frock-SOL −9.79%) followed
+  the same shape: one or two small wins on a pool that was **under 6 hours
+  old** at deploy, then a repeat deploy into the same `base_mint` that gave
+  everything back and then some.
+- `smart_wallets_present` was checked as a candidate signal and **retired
+  immediately** — 0 of 742 positions in history ever had it `true`, so it's
+  a base-rate artifact of memecoin screening, not a discriminating signal.
+- Simulated against history: capping a `base_mint` to one deploy per
+  weekend session, but only counting it as "capped" when that token's
+  *first* deploy the session started under a 6h freshness cutoff (not
+  re-checked on the repeat — SalaryCat's fatal leg was 7.84h old by the
+  time it fired, well past 6h, but the session-opening deploy was 4.37h),
+  turned the weekend-night dataset from a **$35.79 net loss into a $5.14
+  net gain** — better than either a blanket "one deploy per token, any
+  age" rule (+$36.67) or a naive per-leg freshness recheck (+$25.86, which
+  misses SalaryCat's case specifically).
+
+**Guard #8** (`guards/08-weekend-fresh-repeat.js`) implements exactly that:
+pure `getWeekendSessionBoundsWIB()`/`isWeekendNightWIB()` for the WIB
+window math, `getWeekendFreshRepeatRejectReason()` for the decision. Wired
+into `tools/executor.js`'s `runSafetyChecks()` for `deploy_position`,
+reusing `pool_age_hours`/`base_mint` that `validateDeployPoolThresholds()`
+already fetches fresh before every deploy (zero extra network calls) and
+`state/state.js`'s `getTrackedPositions(false)` for same-session history.
+Two new fields on `state.json` position records make the "was it fresh at
+session-open" check possible going forward: `base_mint` (wasn't stored at
+all before this) and `pool_age_hours_at_deploy`. Five new config keys under
+`management.weekendGuard*`, defaulting to enabled with the exact validated
+window (Sat 18:00 → Mon 04:00 WIB, 6h freshness cutoff).
+
+## 2026-08-11-17 — Telegram redesign: deterministic deploy/close cards
+
+The LLM-authored "🚀 DEPLOYED" report — hand-formatted numbers, prone to
+the same drift/hallucination class of bug PR #8 already fixed once — is
+replaced with `deployedReport()` (`integrations/telegram-format.js`): a
+deterministic card built entirely from `deploy_position`'s own tool result
+and the winning candidate's recon data, following the same pattern
+`noDeployReport()` already established. Adds a conviction badge line
+(derived from `organic_score`: 🟢 HIGH ≥85, 🟡 MODERATE ≥70, 🟠 LOW below)
+and an aligned `<pre>` metrics block, which Telegram renders with its
+native copy affordance. The SCREENER prompt is simplified accordingly —
+the LLM now supplies only a one-line "why" instead of hand-formatting an
+entire report. The "LLM chose no deploy" case is also routed through
+`noDeployReport()` for the same visual consistency the hallucination-
+override case already had. `notifyClose()` gets a matching 🟢 WIN / 🔴 LOSS
+badge line, and a failed insurance withdrawal now renders distinctly
+("⚠️ withdrawal FAILED") instead of looking identical to "nothing needed
+withdrawing" — a real accuracy gap, since every withdrawal had in fact
+been failing silently on the VPS until the unit-bug fixes below.
+
+Also this window: `close_position`'s `reason` argument is now sanitized
+(`sanitizeCloseReason()`, `tools/executor.js`) — an LLM that formatted its
+close reason as a JSON object instead of a short phrase (schema-valid,
+since it's still technically a string) was flowing straight through into
+pool-memory notes and the Telegram message verbatim; fixed after the
+operator reported receiving raw JSON as a "close reason" in production.
+
+## 2026-08-11/12 — Self-funded pooled insurance backstop
+
+New opt-in feature: a small % of every deploy is skimmed to a separate
+token and held aside in the same wallet as a shared loss backstop, sized
+from real win/loss occurrence data (47.3 wins per big loss, historically)
+rather than a per-position self-insurance guess.
+
+- **Pooled, not per-position** — `management.insurancePct` (default 1%) is
+  skimmed at deploy time before the LP deposit; a severe loss draws on the
+  *aggregate* wallet balance, capped at whatever's accumulated, since one
+  position's own skim (~$0.17 typical) can't meaningfully offset a real
+  ~$7–20 loss on its own.
+- **5-tier withdrawal rules** (`computeInsuranceWithdraw()`, reworked from
+  an initial single-severe-loss-only version): profit ≥1% keeps everything;
+  0–1% profit tops up the shortfall vs. this position's own contribution;
+  a mild loss (worse than 0, better than `stopLossPct × triggerFraction`)
+  withdraws the position's own contribution in full; a severe loss covers
+  the loss capped at the pool; an empty pool never withdraws.
+- **Deploy-time pool cap** (`insuranceMaxPoolPct`, default 30%) — stops
+  growing the pool once it already holds that share of the estimated total
+  portfolio (wallet SOL + all open positions' value), so a backstop can't
+  itself become an unbounded slice of holdings.
+- **Token switched twice**: USDC → CASH (Bridge's USD stablecoin, verified
+  via Jupiter's asset API before wiring in) → JitoSOL (an explicit
+  operator tradeoff: the pool now tracks SOL price and earns staking
+  yield instead of holding USD value through a SOL crash).
+- **Two real unit bugs found and fixed after pulling live VPS data**,
+  verified against actual on-chain transactions via Solana RPC:
+  1. `swapToken()` returned Jupiter Swap V2's raw atomic units without
+     converting to decimal token amounts — a swap that delivered
+     `0.752897` CASH was recorded as `752897`.
+  2. The real cause of every "Insufficient funds" withdrawal failure in
+     production: a dollar-denominated withdrawal amount was passed
+     directly as `swapToken()`'s `amount`, which means *native token
+     units*, not USD — a ~$15 withdrawal was read as "sell 15 JitoSOL"
+     (~$1500) against a wallet holding ~$15 of it. Every withdrawal on the
+     VPS had been failing silently until this fix; the Telegram close
+     message was also fixed to say "withdrawal FAILED" instead of
+     rendering a failed swap identically to "nothing needed withdrawing".
+- Telegram notifications extended to show the insured amount at deploy
+  time and the full contribute/withdraw/pool-remaining flow at close.
+
+## 2026-08-10 — Deploy-amount rounding fix, hallucinated reports, briefing HTML escaping
+
+Root-caused why the VPS had stopped deploying and why a morning briefing
+(and manual `/briefing`) went silently unanswered — two unrelated bugs
+found via live VPS log analysis:
+
+- **Deploy-amount rounding rejection loop**: `computeDeployAmount()`'s
+  `.toFixed(2)` could round a regime-adjusted amount down (e.g.
+  `0.7 × 0.85` → `"0.59"`) while the safety check compared it against the
+  raw unrounded config floor (`≈0.59499999999999997`), rejecting every
+  deploy by less than half a cent. Fixed with a shared `round2()` helper
+  applied to both sides of every SOL-amount floor/ceiling comparison. This
+  also explained an OpenRouter usage spike the same day — the SCREENER
+  kept re-evaluating the same 2–3 candidates that repeatedly failed the
+  mismatched check.
+- **Hallucinated deploy reports**: the SCREENER LLM could write "🚀
+  DEPLOYED" text even when `deploy_position` had actually failed, and the
+  Telegram report forwarded it verbatim. Now overridden with a
+  deterministic failure report whenever `deploySucceeded` is false,
+  regardless of what the LLM's own text claimed.
+- **Briefing HTML escaping**: a lesson's `rule` text containing raw `<=`
+  broke Telegram's HTML parser, silently dropping the entire briefing
+  message — both the scheduled 1am briefing and on-demand `/briefing`
+  share this code path, explaining both symptoms at once. Fixed by
+  escaping lesson text before interpolation.
+- Added a deterministic, non-LLM `reason` field to close notifications,
+  sourced from `result.close_reason`.
+
 ## 2026-07-31 — Guard extraction + folder reorganization
 
 Major refactor, no behavior change — reorganizes code, doesn't change what

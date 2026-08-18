@@ -111,6 +111,12 @@ export const KEY_GROUPS = {
   insurancePct: "management",
   insuranceTriggerFraction: "management",
   insuranceMaxPoolPct: "management",
+  weekendGuardEnabled: "management",
+  weekendGuardMaxFreshAgeHours: "management",
+  weekendGuardStartDow: "management",
+  weekendGuardStartHour: "management",
+  weekendGuardEndDow: "management",
+  weekendGuardEndHour: "management",
 
   // ── strategy ──
   strategy: "strategy",

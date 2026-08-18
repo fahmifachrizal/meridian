@@ -26,7 +26,7 @@ import {
   createLiveMessage,
   escapeHtml,
 } from "./integrations/telegram.js";
-import { noDeployReport, positionBlock } from "./integrations/telegram-format.js";
+import { noDeployReport, positionBlock, deployedReport } from "./integrations/telegram-format.js";
 import { generateBriefing } from "./integrations/briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state/state.js";
 import { getActiveStrategy } from "./state/strategy-library.js";
@@ -441,6 +441,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   let prePositions, preBalance;
   let liveMessage = null;
   let screenReport = null;
+let deployedCardHtml = null;
   try {
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
     if (prePositions.total_positions >= config.risk.maxPositions) {
@@ -683,6 +684,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     let deployAttempted = false;
     let deploySucceeded = false;
     let deployFailureReason = null;
+    let deployResult = null;
     const { content } = await agentLoop(`
 SCREENING CYCLE
 ${strategyBlock}
@@ -697,46 +699,18 @@ STEPS:
 3. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
    bins_below = round(${config.strategy.minBinsBelow} + (candidate volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}].
    pass deploy_position.volatility = the candidate volatility value.
-   For single-side SOL deploys, do not invent upside:
-   set amount_y only, keep amount_x = 0, keep bins_above = 0, and let the upper bin stay at the active bin.
-4. Report in this exact format. It is read on a phone: no markdown, no
-   tables, no extra sections, and no line longer than ~60 characters.
+   For single-side SOL deploys, do not invent upside: set amount_y only,
+   keep amount_x = 0, keep bins_above = 0, and let the upper bin stay at
+   the active bin.
+4. If you deploy, report in this exact format — the full metrics card is
+   generated automatically from the tool result afterward, so this is only
+   a one-line marker plus your own reasoning, not a data report:
    🚀 DEPLOYED
-
-   <pool name>
-   <pool address>
-
-   ◎<deploy amount> · <strategy> · bin <active_bin>
-   range <minPrice> → <maxPrice>
-   cover <downside %> down · <upside %> up · <total width %> wide
-
-   IMPORTANT:
-   - Do NOT calculate the range percentages yourself.
-   - Use the actual deploy_position tool result:
-     range_coverage.downside_pct / .upside_pct / .width_pct
-   - For "◎<deploy amount>", use the tool result's amount_y, not the
-     goal's requested amount — if insurance is enabled a small slice is
-     skimmed to the pool before the LP deposit, so the actual deployed
-     amount can be slightly less than what was requested.
-   - If the tool result's insurance_usdc_amount is present and > 0, add
-     one line "insured $<insurance_usdc_amount>" right after the
-     ◎<deploy amount> line. Omit this line entirely if insurance is 0
-     or not present — do not print "insured $0".
-
-   market  fee/tvl <x>% · vol $<x> · tvl $<x> · volat <x>
-   token   organic <x> · mcap $<x> · age <x>h
-   audit   top10 <x>% · bots <x>% · fees <x> SOL
-   smart   <names or none>
-
    why  <ONE line: the single strongest reason it won, plus the main risk>
-5. If no pool qualifies, report in this exact format instead:
+5. If no pool qualifies, report in this exact format instead — the header
+   is added automatically, so just the marker plus one line:
    ⛔ NO DEPLOY
-
-   best <name or none>
    why  <ONE line explaining why nothing qualified>
-
-   rejected
-   • <name> — <reason, a few words>   (at most 3 lines)
 IMPORTANT:
 - Compact and scannable beats complete. Prefer " · " separated values on one
   line over one label per line. Never pad with restatement or summary.
@@ -752,6 +726,8 @@ IMPORTANT:
             if (!deploySucceeded) {
               deployFailureReason = result?.reason || result?.error
                 || (result?.blocked ? "blocked: already attempted this session" : null);
+            } else {
+              deployResult = result;
             }
           }
           await liveMessage?.toolFinish(name, result, success);
@@ -766,6 +742,13 @@ IMPORTANT:
         reason: stripThink(content).slice(0, 500),
       });
       noteScreeningResult(false);
+      // Same deterministic wrapper as the hallucination-override branch below,
+      // for visual consistency — only the header/labels are templated here,
+      // the reasoning itself is still the LLM's own text.
+      screenReport = noDeployReport({
+        reason: stripThink(content).replace(/⛔\s*NO DEPLOY/i, "").replace(/^\s*why\s*/i, "").trim().slice(0, 300),
+        html: false,
+      });
     } else if (!deploySucceeded) {
       appendDecision({
         type: "no_deploy",
@@ -789,6 +772,35 @@ IMPORTANT:
       });
     } else {
       noteScreeningResult(true);
+      // Deterministic card, not the LLM's own free-text report — same
+      // reasoning as the hallucinated-report override above: an LLM asked
+      // to hand-format an aligned metrics table drifts over time. Every
+      // number here comes from deploy_position's own tool result or the
+      // winning candidate's own recon data; `why` is the LLM's one
+      // remaining synthesis, capped and escaped, not a data point.
+      const winner = passing.find(({ pool }) => pool.pool === deployResult?.pool);
+      deployedCardHtml = deployedReport({
+        poolName: deployResult?.pool_name ?? winner?.pool?.name,
+        poolAddress: deployResult?.pool,
+        amountSol: deployResult?.amount_y,
+        strategy: config.strategy.strategy,
+        activeBin: deployResult?.bin_range?.active,
+        priceRange: deployResult?.price_range,
+        rangeCoverage: deployResult?.range_coverage,
+        insuranceUsd: deployResult?.insurance_usdc_amount,
+        feeTvlRatio: winner?.pool?.fee_active_tvl_ratio,
+        volume: winner?.pool?.volume_window,
+        tvl: winner?.pool?.tvl ?? winner?.pool?.active_tvl,
+        organicScore: winner?.pool?.organic_score,
+        mcap: winner?.pool?.mcap,
+        ageHours: winner?.pool?.token_age_hours,
+        top10Pct: winner?.ti?.audit?.top_holders_pct,
+        botsPct: winner?.ti?.audit?.bot_holders_pct,
+        smartWalletNames: winner?.sw?.in_pool?.map((w) => w.name),
+        why: stripThink(content).replace(/🚀\s*DEPLOYED/i, "").replace(/^\s*why\s*/i, "").trim().slice(0, 200),
+        position: deployResult?.position,
+        tx: deployResult?.txs?.[0] ?? deployResult?.tx,
+      });
     }
   } catch (error) {
     log("cron_error", `Screening cycle failed: ${error.message}`);
@@ -796,7 +808,10 @@ IMPORTANT:
   } finally {
     _screeningBusy = false;
     if (!silent && telegramEnabled()) {
-      if (screenReport) {
+      if (deployedCardHtml) {
+        if (liveMessage) await liveMessage.finalize("✅ Deployed — see below").catch(() => {});
+        await sendHTML(deployedCardHtml).catch(() => {});
+      } else if (screenReport) {
         // The report is plain text (LLM-authored or built from pool names) and
         // the live message is HTML-mode, so it must be escaped wholesale.
         const body = escapeHtml(stripThink(screenReport));
@@ -1648,7 +1663,7 @@ async function telegramHandler(msg) {
         const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
         await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
       } else {
-        await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
+        await sendMessage(`❌ Close failed: ${result.error || result.reason || "unknown error"}`);
       }
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;

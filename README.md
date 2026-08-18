@@ -518,7 +518,7 @@ All fields are optional — defaults shown. Edit `user-config.json`.
 | `maxDeployAmount` | `50` | Maximum SOL cap per position |
 | `gasReserve` | `0.2` | Minimum SOL to keep for gas |
 | `minSolToOpen` | `0.55` | Minimum wallet SOL before opening |
-| `outOfRangeWaitMinutes` | `30` | Minutes OOR before acting |
+| `outOfRangeWaitMinutes` | `20` | Minutes OOR before acting |
 | `stopLossPct` | `-15` | Close position if price drops by this % |
 | `takeProfitPct` | `5` | Close when fees earned reach this % of capital |
 | `trailingTakeProfit` | `true` | Enable trailing take-profit |
@@ -926,6 +926,10 @@ guards/
   01-token-age-window.js       through
   07-avoid-pin.js              — the 7 post-mortem safety guards, one file
                                  per guard, numbered by execution order
+  08-weekend-fresh-repeat.js   — caps a token to one deploy per Sat 18:00->
+                                 Mon 04:00 WIB session if it started fresh
+                                 (<weekendGuardMaxFreshAgeHours old) that
+                                 session; see CHANGELOG for the data behind it
 
 util/
   envcrypt.js         .env encryption

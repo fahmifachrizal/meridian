@@ -9,10 +9,43 @@
  * getDeterministicCloseRule for the exit (via each position's recorded
  * `timeline`). Guards #3/#4/#7 are NOT replayed — they need
  * rejection/TVL-snapshot/pool-average history this fixture doesn't carry
- * meaningfully, and rules 3/5/6 can't fire from `timeline` (it lacks
- * active_bin/upper_bin/fee_per_tvl_24h) — a timeline that never trips
- * 1/2/4 falls back to the position's actual historical outcome. See
- * test/test-benchmark-eval.js and test/fixtures/README.md.
+ * meaningfully. A timeline that never trips 1/2/4 falls back to the
+ * position's actual historical outcome. See test/test-benchmark-eval.js
+ * and test/fixtures/README.md.
+ *
+ * Tier 1 extension (rules 3/5, the OOR rules): `timeline` alone can't
+ * replay these — it has no active_bin/upper_bin. `deriveBinTimeline()`
+ * reconstructs a per-minute active_bin series from the fixture's real
+ * `price_ohlcv_1m` data instead, anchored on the fact that every one of
+ * these single-sided-SOL deploys had `bins_above: 0` at deploy time — so
+ * `bin_range.max` IS the active bin at the moment of deploy, no separate
+ * price/bin anchor needed. Deploy time itself is derived from the first
+ * timeline tick (`ts - age_minutes`), and active_bin at each later candle
+ * is walked forward via the standard DLMM bin-price formula,
+ * `price_ratio = (1 + bin_step/10000) ^ bin_delta`. This is still a
+ * simplification, not a full replay: pnl_pct at each derived tick is
+ * *interpolated* from the sparse recorded `timeline` (DLMM mark-to-market
+ * isn't a pure function of spot price, so this doesn't recompute pnl from
+ * bin composition) — good enough to answer "would this rule have fired
+ * sooner/later," not to produce an independently-verified pnl curve.
+ * `simulateExitWithPriceReplay()` uses this when a position has usable
+ * `bin_step`/`price_ohlcv_1m` (7 of the 8 fixture positions; OGDOGE-SOL
+ * has `bin_step: null` and falls back to `simulateExitUnderConfig`).
+ *
+ * Tier 2 (larger sample): the curated 8-position fixture is too small,
+ * and too dominated by deploy-gate blocking, to show the headroom's
+ * effect in an aggregate number (see CHANGELOG). `attachPriceOhlcv()`
+ * merges real per-pool OHLCV — fetched separately by
+ * scripts/fetch-pool-first-days-ohlcv.js into
+ * scripts/data/pool-first-3days-ohlcv.json, covering each pool's first 3
+ * days of life — onto test/fixtures/market-benchmark-positions.json's 316
+ * positions, which don't ship with `price_ohlcv_1m` of their own. Every
+ * position with a usable `bin_step` in that fixture also has
+ * `pool_age_hours_at_deploy <= 72`, so the 3-day cache always covers its
+ * deploy window — verified, not assumed (see scripts/evaluate-config.js's
+ * `--fixture=market` path). `deriveBinTimeline()`'s anchor-distance guard
+ * (below) is the runtime backstop for that assumption on any future
+ * position where it doesn't hold.
  */
 
 import { getTokenAgeWindowRejectReason } from "../../guards/01-token-age-window.js";
@@ -116,11 +149,161 @@ export function simulateExitUnderConfig(mgmtConfig, position, stopLossOverride) 
 }
 
 /**
+ * Merges cached per-pool OHLCV (scripts/data/pool-first-3days-ohlcv.json's
+ * shape: `{ [poolAddress]: { candles: [{ts, close, volume}], error? } }`)
+ * onto a positions array as `price_ohlcv_1m`, non-destructively (returns
+ * new position objects; the cache and input array are untouched). Positions
+ * with no cache entry, an errored entry, or an empty candle list are
+ * returned unchanged — deriveBinTimeline()'s own guards handle the
+ * resulting missing/insufficient `price_ohlcv_1m` the same way as any
+ * other fixture position that never had it.
+ */
+export function attachPriceOhlcv(positions, ohlcvCache) {
+  return positions.map((p) => {
+    const entry = ohlcvCache[p.pool];
+    if (!entry || entry.error || !Array.isArray(entry.candles) || entry.candles.length === 0) return p;
+    return { ...p, price_ohlcv_1m: entry.candles };
+  });
+}
+
+/**
+ * Reconstructs a per-minute active_bin series for `position` from its real
+ * `price_ohlcv_1m` candles, anchored on `bin_range.max` == the active bin
+ * at deploy time (true for every fixture position: `bins_above: 0`
+ * historically). Returns null when the position lacks the data needed
+ * (`bin_step`, a non-empty `price_ohlcv_1m`, or a `timeline` to derive the
+ * deploy timestamp from) — callers should fall back to
+ * `simulateExitUnderConfig` in that case.
+ *
+ * `binsAboveOverride`, when given, replaces the position's historical
+ * `bin_range.bins_above` (always 0 in this fixture) — this is how a
+ * candidate config's headroom (e.g. the 10% top headroom added in
+ * tools/dlmm.js) gets tested against real price paths: it shifts
+ * `upper_bin` without changing anything else about the replay.
+ */
+export function deriveBinTimeline(position, { binsAboveOverride } = {}) {
+  const binStep = position.bin_step;
+  const binRange = position.bin_range;
+  const candles = position.price_ohlcv_1m;
+  const timeline = position.timeline;
+  if (!binStep || !binRange || !Array.isArray(candles) || candles.length === 0 || !Array.isArray(timeline) || timeline.length === 0) {
+    return null;
+  }
+
+  const firstTick = timeline[0];
+  const deployTs = new Date(firstTick.ts).getTime() - (firstTick.age_minutes ?? 0) * 60_000;
+
+  let anchorCandle = candles[0];
+  let anchorDiff = Math.abs(candles[0].ts - deployTs);
+  for (const c of candles) {
+    const diff = Math.abs(c.ts - deployTs);
+    if (diff < anchorDiff) {
+      anchorCandle = c;
+      anchorDiff = diff;
+    }
+  }
+  // The anchor assumes `bin_range.max` was the active bin AT deploy time —
+  // only true if a candle actually exists near deploy_ts. A candle set
+  // that doesn't cover the deploy window (e.g. only a pool's first 3 days
+  // fetched, but this position's deploy_sequence put its actual deploy
+  // later) would silently anchor on a stale/irrelevant price and produce
+  // a meaningless active_bin series. Bail rather than guess.
+  const ANCHOR_TOLERANCE_MS = 30 * 60_000;
+  if (anchorDiff > ANCHOR_TOLERANCE_MS) return null;
+  const priceAtDeploy = anchorCandle.close;
+  if (!priceAtDeploy || priceAtDeploy <= 0) return null;
+
+  const logStep = Math.log(1 + binStep / 10_000);
+  const upperBin = binRange.max + (binsAboveOverride ?? binRange.bins_above ?? 0);
+
+  let outOfRangeSinceTs = null;
+  const ticks = [];
+  for (const c of candles) {
+    if (c.ts < deployTs) continue;
+    const price = c.close;
+    if (!price || price <= 0) continue;
+    const activeBin = binRange.max + Math.round(Math.log(price / priceAtDeploy) / logStep);
+    const inRange = activeBin <= upperBin;
+    if (!inRange) {
+      if (outOfRangeSinceTs == null) outOfRangeSinceTs = c.ts;
+    } else {
+      outOfRangeSinceTs = null;
+    }
+    const minutesOutOfRange = outOfRangeSinceTs != null ? (c.ts - outOfRangeSinceTs) / 60_000 : 0;
+    ticks.push({ ts: c.ts, active_bin: activeBin, upper_bin: upperBin, in_range: inRange, minutes_out_of_range: minutesOutOfRange });
+  }
+  return ticks;
+}
+
+// Linear interpolation of the sparse recorded pnl_pct timeline onto an
+// arbitrary timestamp — clamped to the first/last recorded value outside
+// the recorded range.
+function interpolatePnlPct(pnlTimeline, ts) {
+  if (!pnlTimeline || pnlTimeline.length === 0) return null;
+  const points = pnlTimeline.map((t) => ({ t: new Date(t.ts).getTime(), pnl_pct: t.pnl_pct }));
+  if (ts <= points[0].t) return points[0].pnl_pct;
+  const last = points[points.length - 1];
+  if (ts >= last.t) return last.pnl_pct;
+  for (let i = 0; i < points.length - 1; i++) {
+    if (ts >= points[i].t && ts <= points[i + 1].t) {
+      const span = points[i + 1].t - points[i].t;
+      const frac = span > 0 ? (ts - points[i].t) / span : 0;
+      return points[i].pnl_pct + frac * (points[i + 1].pnl_pct - points[i].pnl_pct);
+    }
+  }
+  return last.pnl_pct;
+}
+
+/**
+ * Exit replay using the derived per-minute active_bin series (rules
+ * 1/2/3/4/5 all reachable) when the position has usable price/bin data;
+ * falls back to `simulateExitUnderConfig` (rules 1/2/4 only, off the
+ * coarse recorded `timeline`) otherwise.
+ */
+export function simulateExitWithPriceReplay(mgmtConfig, position, stopLossOverride, { binsAboveOverride } = {}) {
+  const binTicks = deriveBinTimeline(position, { binsAboveOverride });
+  if (!binTicks || binTicks.length === 0) {
+    return simulateExitUnderConfig(mgmtConfig, position, stopLossOverride);
+  }
+
+  for (const tick of binTicks) {
+    const pnlPct = interpolatePnlPct(position.timeline, tick.ts);
+    const fakePosition = {
+      pnl_pct: pnlPct,
+      in_range: tick.in_range,
+      minutes_out_of_range: tick.minutes_out_of_range,
+      active_bin: tick.active_bin,
+      upper_bin: tick.upper_bin,
+      fee_per_tvl_24h: null,
+      stop_loss_pct_override: stopLossOverride ?? null,
+    };
+    const result = getDeterministicCloseRule(fakePosition, mgmtConfig);
+    if (result && [1, 2, 3, 4, 5].includes(result.rule)) {
+      return { pnl_pct: pnlPct, rule: result.rule, reason: result.reason, tick, source: "price_replay" };
+    }
+  }
+  return {
+    pnl_pct: position.outcome.pnl_pct,
+    rule: null,
+    reason: position.outcome.close_reason,
+    tick: null,
+    source: "historical_fallback",
+  };
+}
+
+/**
  * Full pipeline for one position: deploy gate -> exit replay -> SOL/USD
  * conversion. If the deploy would be blocked, contributes zero pnl (capital
  * never at risk).
+ *
+ * `opts.applyHeadroom: true` computes the candidate config's 10% top
+ * headroom (tools/dlmm.js: bins_above = round(round(bins_below*1.10)*0.10))
+ * from the position's historical `bin_range.bins_below` and passes it into
+ * the price replay as `binsAboveOverride` — the only way to test that
+ * change against real price paths, since it's a hardcoded deploy-time
+ * calculation, not a config key.
  */
-export function evaluatePosition(cfg, position, poolMemory) {
+export function evaluatePosition(cfg, position, poolMemory, opts = {}) {
   const deployResult = wouldDeployUnderConfig(cfg, position, poolMemory);
 
   if (!deployResult.deploy) {
@@ -138,7 +321,13 @@ export function evaluatePosition(cfg, position, poolMemory) {
     };
   }
 
-  const exitResult = simulateExitUnderConfig(cfg.management, position, deployResult.stopLossOverride);
+  let binsAboveOverride;
+  if (opts.applyHeadroom && position.bin_range?.bins_below != null) {
+    const paddedBinsBelow = Math.round(position.bin_range.bins_below * 1.1);
+    binsAboveOverride = Math.round(paddedBinsBelow * 0.1);
+  }
+
+  const exitResult = simulateExitWithPriceReplay(cfg.management, position, deployResult.stopLossOverride, { binsAboveOverride });
   const solPriceAtEntry = position.outcome.initial_value_usd / position.amount_sol;
   const scaledInitialValueUsd = position.outcome.initial_value_usd * (deployResult.sizeSol / position.amount_sol);
   const pnlUsd = (exitResult.pnl_pct / 100) * scaledInitialValueUsd;
@@ -161,10 +350,12 @@ export function evaluatePosition(cfg, position, poolMemory) {
 /**
  * Aggregate metric across the whole benchmark: total pnl in SOL/USD, win
  * rate, and a comparison against what actually happened historically.
+ *
+ * `opts.applyHeadroom: true` — see evaluatePosition().
  */
-export function evaluateConfig(cfg, positions, poolMemory) {
+export function evaluateConfig(cfg, positions, poolMemory, opts = {}) {
   const validPositions = positions.filter((p) => !p.error);
-  const results = validPositions.map((p) => evaluatePosition(cfg, p, poolMemory));
+  const results = validPositions.map((p) => evaluatePosition(cfg, p, poolMemory, opts));
 
   const deployedResults = results.filter((r) => r.deployed);
   const totalPnlSol = results.reduce((s, r) => s + r.pnl_sol, 0);

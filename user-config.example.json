@@ -61,6 +61,18 @@
   "pnlSanityMaxDiffPct": 5,
   "solMode": false,
 
+  "insuranceEnabled": false,
+  "insurancePct": 1,
+  "insuranceTriggerFraction": 0.5,
+  "insuranceMaxPoolPct": 30,
+
+  "weekendGuardEnabled": true,
+  "weekendGuardMaxFreshAgeHours": 6,
+  "weekendGuardStartDow": 6,
+  "weekendGuardStartHour": 18,
+  "weekendGuardEndDow": 1,
+  "weekendGuardEndHour": 4,
+
   "managementIntervalMin": 10,
   "screeningIntervalMin": 30,
   "healthCheckIntervalMin": 60,
