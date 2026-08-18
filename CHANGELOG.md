@@ -7,6 +7,59 @@ version tags exist in this repo's history, so dates are the anchor.
 
 ---
 
+## 2026-08-18 — Real-price backtest of the 10% upside headroom; reverted
+
+Built out `test/lib/benchmark-eval.js`'s config backtester to actually
+replay the OOR rules (3 and 5) against real minute-level price data,
+instead of falling back to each position's historical outcome whenever
+its recorded `timeline` didn't happen to trip a rule:
+
+- **Tier 1** — `deriveBinTimeline()` reconstructs a per-minute `active_bin`
+  series from the curated 8-position fixture's real `price_ohlcv_1m`,
+  anchored on `bin_range.max` == the active bin at deploy (true
+  historically: every deploy had `bins_above: 0`). `pnl_pct` at each
+  derived tick is interpolated from the sparse recorded `timeline`, not
+  recomputed from bin composition — good enough to answer "would this
+  rule have fired sooner," not to independently verify a pnl curve. On
+  this fixture, isolated to the one usable pumped-above case
+  (brain-SOL), the 10% headroom looked like a clean improvement
+  (+1.27% -> +1.45% at exit) — but the fixture's other 7 positions are
+  mostly blocked at the deploy gate by other guards, so the aggregate
+  couldn't show the effect at all.
+- **Fetched real per-pool OHLCV to fix the sample-size gap** —
+  `scripts/fetch-pool-first-days-ohlcv.js` (already existed, first-3-days
+  cache) went from 187/316 pools cached to 305/316 (11 permanently
+  outside GeckoTerminal's public-API 180-day historical window, now
+  cached with a `permanent` flag so future runs stop retrying them
+  instead of treating it as transient).
+- **Tier 2** — `attachPriceOhlcv()` merges that cache onto the
+  316-position `market-benchmark-positions.json` fixture at runtime
+  (verified: every position with a usable `bin_step` also has
+  `pool_age_hours_at_deploy <= 72`, so the cached first-3-days window
+  always covers its deploy). `scripts/evaluate-config.js --fixture=market
+  --compare-headroom` runs both variants and diffs them.
+
+**Result: the larger sample reversed the Tier 1 read.** Under the live
+config (current `stopLossPct: -15%`), the headroom is net **negative**:
+-$26.69 across 184 deployed positions, 33 of them changed exit. Diagnosed
+(not assumed): the live stop-loss fires very aggressively when replayed
+against these positions' real interim-drawdown timelines — many swing to
+-15/-17% mid-flight before recovering to a real historical win, a
+pre-existing confound of backtesting today's config against old data. It
+dominates the headroom signal. Isolating just the OOR mechanics
+(stop-loss/take-profit disabled) confirms the mechanism itself works —
+net **+$239.73**, win rate 80% -> 87% — but under the *actual* running
+config, delaying a pumped-above exit often rides the position into a
+worse stop-loss instead of capturing the extra upside, and that effect
+wins out in aggregate.
+
+**Reverted the 10% upside headroom** (`tools/dlmm.js`, `index.js`'s
+SCREENER prompt) back to `bins_above = 0` for single-sided SOL deploys —
+the backtest that motivated adding it didn't have the sample size to
+catch this interaction; the backtest that does says it costs money under
+current settings. The 10% *downside* padding from the same session is
+unaffected (it isn't part of this rule's replay) and stays as-is.
+
 ## 2026-08-17 — OOR pattern analysis + range/timer re-strategizing
 
 Data-driven analysis of the full closed-position history (726 positions

@@ -561,20 +561,18 @@ export async function deployPosition({
   const isSingleSidedSol = finalAmountX <= 0 && finalAmountY > 0;
   if (isSingleSidedSol && (Number(bins_above ?? 0) > 0 || Number(upside_pct ?? 0) > 0)) {
     throw new Error(
-      "Single-side SOL deploy cannot request a custom bins_above/upside_pct. Upside headroom is fixed at 10% of bins_below — do not pass bins_above/upside_pct.",
+      "Single-side SOL deploy cannot use bins_above or upside_pct. Use amount_y with bins_below only; the upper bin is the SDK active bin.",
     );
   }
   if (isSingleSidedSol) {
-    // Deterministic 10% upside headroom, not the old hard 0. amount_x stays
-    // 0, so these upper bins get zero real liquidity — confirmed against
-    // @meteora-ag/dlmm's toAmountAskSide: a zero totalAmount produces
-    // zero-amount entries for every bin, no error, no token-price exposure
-    // added. This only widens the tracked range so a pump doesn't
-    // immediately trip "pumped far above range" while still profitable.
-    // (Pattern-analysis finding: 41% of all closes were exactly that
-    // structural trigger, capping a winning position at ~21 minutes held
-    // because the old range had zero upside room at all.)
-    activeBinsAbove = Math.round(activeBinsBelow * 0.10);
+    // The 10% top headroom tried this session backtested net NEGATIVE
+    // against a 316-position real-price replay (test/lib/benchmark-eval.js
+    // Tier 2, scripts/evaluate-config.js --fixture=market
+    // --compare-headroom): under the live config's stop-loss, delaying a
+    // pumped-above-range exit sometimes rides the position into a worse
+    // stop-loss instead of capturing extra upside, net -$26.69 across 184
+    // deployed positions. Reverted — see CHANGELOG.
+    activeBinsAbove = 0;
   }
   activeBinsBelow = Number(activeBinsBelow);
   activeBinsAbove = Number(activeBinsAbove);

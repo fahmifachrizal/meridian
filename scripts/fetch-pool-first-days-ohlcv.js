@@ -17,6 +17,13 @@
  * WINDOW_DAYS invalidates the whole cache (the window end shifts), so bump
  * OUT_PATH's filename alongside it rather than silently mixing windows.
  *
+ * GeckoTerminal's public API enforces a 180-day historical OHLCV window
+ * (HTTP 401, "You can only access data from the past 180 days with Public
+ * API"). This is a PERMANENT exclusion, not transient — a pool's age only
+ * increases, so a pool whose window is already past the cutoff will never
+ * come back into range. Such entries are cached with `permanent: true` and
+ * skipped on every future run (not retried like other errors).
+ *
  * Run: node scripts/fetch-pool-first-days-ohlcv.js
  */
 
@@ -49,6 +56,13 @@ async function fetchPoolCreatedAt(poolAddress) {
 
 // Paginates backwards from windowEndMs until candles reach windowStartMs or
 // the API stops returning older data (pool younger than requested window).
+class PermanentFetchError extends Error {
+  constructor(message) {
+    super(message);
+    this.permanent = true;
+  }
+}
+
 async function fetchMinuteOhlcvRange(poolAddress, windowStartMs, windowEndMs) {
   const all = [];
   let cursorMs = windowEndMs;
@@ -58,6 +72,14 @@ async function fetchMinuteOhlcvRange(poolAddress, windowStartMs, windowEndMs) {
     const beforeTimestampSec = Math.floor(cursorMs / 1000);
     const url = `${GECKO_BASE}/networks/solana/pools/${poolAddress}/ohlcv/minute?limit=${MAX_CANDLES_PER_CALL}&currency=usd&before_timestamp=${beforeTimestampSec}`;
     const res = await fetch(url);
+    if (res.status === 401) {
+      const body = await res.json().catch(() => null);
+      const title = body?.errors?.[0]?.title ?? "";
+      if (/past 180 days/i.test(title)) {
+        throw new PermanentFetchError(title || "beyond GeckoTerminal's 180-day public API window");
+      }
+      throw new Error(`HTTP 401${title ? `: ${title}` : ""}`);
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.errors) throw new Error(data.errors.map((e) => e.title).join("; "));
@@ -129,8 +151,12 @@ async function main() {
   console.log(`${targets.length} unique pools total, ${Object.keys(cache).length} already cached`);
 
   let processed = 0;
+  let skippedPermanent = 0;
   for (const t of targets) {
-    if (cache[t.pool] && !cache[t.pool].error) continue;
+    if (cache[t.pool] && (!cache[t.pool].error || cache[t.pool].permanent)) {
+      if (cache[t.pool].permanent) skippedPermanent++;
+      continue;
+    }
     processed++;
     console.log(`[${processed}] ${t.pool_name} (${t.pool})`);
     try {
@@ -140,6 +166,14 @@ async function main() {
 
       const windowStartMs = createdAt;
       const windowEndMs = Math.min(createdAt + WINDOW_MS, Date.now());
+      const publicApiCutoffMs = Date.now() - 180 * 24 * 60 * 60 * 1000;
+      if (windowEndMs < publicApiCutoffMs) {
+        // Short-circuit: don't spend the rate-limited OHLCV call finding
+        // out what we already know from pool_created_at alone.
+        throw new PermanentFetchError(
+          `pool's window ends ${new Date(windowEndMs).toISOString()}, beyond GeckoTerminal's 180-day public API window`,
+        );
+      }
       const candles = await fetchMinuteOhlcvRange(t.pool, windowStartMs, windowEndMs);
 
       cache[t.pool] = {
@@ -153,14 +187,20 @@ async function main() {
       };
       console.log(`  ok: ${candles.length} candles, created ${new Date(createdAt).toISOString()}`);
     } catch (error) {
-      cache[t.pool] = { pool_name: t.pool_name, base_mint: t.base_mint, metadata: t.metadata, error: error.message };
-      console.warn(`  FAILED: ${error.message}`);
+      cache[t.pool] = {
+        pool_name: t.pool_name,
+        base_mint: t.base_mint,
+        metadata: t.metadata,
+        error: error.message,
+        ...(error.permanent ? { permanent: true } : {}),
+      };
+      console.warn(`  FAILED${error.permanent ? " (permanent)" : ""}: ${error.message}`);
     }
     saveCache(cache);
     await sleep(OHLCV_DELAY_MS);
   }
 
-  console.log(`\nDone. ${Object.keys(cache).length}/${targets.length} pools cached at ${OUT_PATH}`);
+  console.log(`\nDone. ${Object.keys(cache).length}/${targets.length} pools cached at ${OUT_PATH}${skippedPermanent ? ` (${skippedPermanent} skipped as permanently out of range)` : ""}`);
 }
 
 main();
