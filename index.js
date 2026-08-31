@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import { agentLoop } from "./core/agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
-import { getWalletBalances } from "./tools/wallet.js";
+import { refreshWalletBalanceCache, getCachedWalletBalance, formatWalletCacheAge } from "./state/wallet-cache.js";
 import { getTopCandidates, degenScore } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./core/config.js";
 import { evolveThresholds, getPerformanceSummary } from "./state/lessons.js";
@@ -169,6 +169,7 @@ function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
   if (_cronTasks._pnlPollInterval) clearInterval(_cronTasks._pnlPollInterval);
   if (_cronTasks._opportunityPollInterval) clearInterval(_cronTasks._opportunityPollInterval);
+  if (_cronTasks._walletCacheInterval) clearInterval(_cronTasks._walletCacheInterval);
   _cronTasks = [];
 }
 
@@ -443,7 +444,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   let screenReport = null;
 let deployedCardHtml = null;
   try {
-    [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
+    [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), refreshWalletBalanceCache()]);
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
       screenReport = `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions}).`;
@@ -923,13 +924,17 @@ Summarize the current portfolio health, total fees earned, and performance of al
       if (Date.now() - _screeningLastTriggered < oppCooldownMs) return;
       _opportunityPollBusy = true;
       try {
-        const [positions, balance] = await Promise.all([
-          getMyPositions({ force: true, silent: true }).catch(() => null),
-          getWalletBalances().catch(() => null),
-        ]);
+        // Deliberately NOT fetching wallet balance here. Helius's Wallet API
+        // is a flat 100 credits/call (https://www.helius.dev/docs/billing/credits) —
+        // at this poller's interval that was ~1,900 calls/day just to answer
+        // "is there enough SOL," a question runScreeningCycle already asks
+        // fresh (and skips on) the moment it's actually triggered below. The
+        // position-count check stays here since it's free (positions is
+        // already fetched for the maxPositions gate); the SOL check now only
+        // runs when a candidate actually qualifies, cutting this specific
+        // call from every ~45s down to only real trigger events.
+        const positions = await getMyPositions({ force: true, silent: true }).catch(() => null);
         if (!positions || (positions.total_positions ?? 0) >= config.risk.maxPositions) return;
-        const minRequired = config.management.deployAmountSol + config.management.gasReserve;
-        if (process.env.DRY_RUN !== "true" && (!balance || balance.sol < minRequired)) return;
 
         const top = await getTopCandidates({ limit: config.opportunity.limit }).catch(() => null);
         const candidates = (top?.candidates || []).slice().sort((a, b) => degenScore(b, config.opportunity) - degenScore(a, config.opportunity));
@@ -967,10 +972,19 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }, oppMs);
   }
 
+  // Hourly floor for the wallet-balance snapshot (state/wallet-cache.js) —
+  // deploy/close events already refresh it far more often during active
+  // trading; this just bounds staleness during a quiet stretch so an
+  // informational /status read is never more than ~1h stale.
+  const walletCacheInterval = setInterval(() => {
+    refreshWalletBalanceCache().catch((e) => log("cron_error", `Hourly wallet-balance refresh failed: ${e.message}`));
+  }, 60 * 60 * 1000);
+
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
   // Store interval refs so stopCronJobs can clear them
   _cronTasks._pnlPollInterval = pnlPollInterval;
   _cronTasks._opportunityPollInterval = opportunityPollInterval;
+  _cronTasks._walletCacheInterval = walletCacheInterval;
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m${config.opportunity.enabled ? `, opportunity poll every ${config.opportunity.pollIntervalSec}s` : ""}`);
 }
 
@@ -1142,8 +1156,9 @@ function describeLatestCandidates(limit = 5) {
 function formatWalletStatus(wallet, positions) {
   const deployAmount = computeDeployAmount(wallet.sol);
   const hive = isHiveMindEnabled() ? "on" : "off";
+  const age = formatWalletCacheAge(wallet.cached_at);
   return [
-    `Wallet: ${wallet.sol} SOL ($${wallet.sol_usd})`,
+    `Wallet: ${wallet.sol} SOL ($${wallet.sol_usd})${age ? ` (as of ${age})` : ""}`,
     `SOL price: $${wallet.sol_price}`,
     `Open positions: ${positions.total_positions}/${config.risk.maxPositions}`,
     `Next deploy amount: ${deployAmount} SOL`,
@@ -1501,7 +1516,7 @@ async function deployLatestCandidate(index) {
       throw new Error(`NO DEPLOY: only cached candidate ${candidate.name} is not worth deploying — ${skipReason}`);
     }
   }
-  const deployAmount = computeDeployAmount((await getWalletBalances()).sol);
+  const deployAmount = computeDeployAmount((await refreshWalletBalanceCache()).sol);
   const binsBelow = computeBinsBelow(candidate.volatility);
   const result = await executeTool("deploy_position", {
     pool_address: candidate.pool,
@@ -1594,7 +1609,11 @@ async function telegramHandler(msg) {
 
   if (text === "/wallet" || text === "/status") {
     try {
-      const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions({ force: true })]);
+      // Informational read — never triggers a live Helius call, see
+      // state/wallet-cache.js. Balance may be up to ~1h stale in the
+      // worst case (nothing deployed/closed recently); fine for a status
+      // read, unlike an actual deploy-time check.
+      const [wallet, positions] = await Promise.all([getCachedWalletBalance(), getMyPositions({ force: true })]);
       const suffix = text === "/status" && positions.total_positions
         ? `\n\nUse /positions for the numbered list.`
         : "";
@@ -1986,8 +2005,11 @@ if (isMain && isTTY) {
 
   busy = true;
   try {
+    // One-shot at boot, not a recurring poll — a live fetch here also
+    // seeds the wallet-cache snapshot so /status doesn't read "not yet
+    // cached" until the first deploy/close/hourly tick.
     const [wallet, positions, { candidates, total_eligible, total_screened }] = await Promise.all([
-      getWalletBalances(),
+      refreshWalletBalanceCache(),
       getMyPositions({ force: true }),
       getTopCandidates({ limit: 5 }),
     ]);
@@ -2088,8 +2110,10 @@ Commands:
 
     if (input === "/status") {
       await runBusy(async () => {
-        const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions({ force: true })]);
-        console.log(`\nWallet: ${wallet.sol} SOL  ($${wallet.sol_usd})`);
+        // Informational read — see state/wallet-cache.js.
+        const [wallet, positions] = await Promise.all([getCachedWalletBalance(), getMyPositions({ force: true })]);
+        const age = formatWalletCacheAge(wallet.cached_at);
+        console.log(`\nWallet: ${wallet.sol} SOL  ($${wallet.sol_usd})${age ? `  (as of ${age})` : ""}`);
         console.log(`Positions: ${positions.total_positions}`);
         for (const p of positions.positions) {
           const status = p.in_range ? "in-range ✓" : "OUT OF RANGE ⚠";
