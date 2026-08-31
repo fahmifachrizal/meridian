@@ -57,9 +57,10 @@ function getJupiterReferralParams() {
  * Returns USD-denominated values provided by Helius.
  */
 export async function getWalletBalances() {
-  let walletAddress;
+  let walletAddress, walletPubkey;
   try {
-    walletAddress = getWallet().publicKey.toString();
+    walletPubkey = getWallet().publicKey;
+    walletAddress = walletPubkey.toString();
   } catch {
     return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
   }
@@ -70,11 +71,30 @@ export async function getWalletBalances() {
     return { wallet: walletAddress, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Helius API key missing" };
   }
 
+  // Raw RPC getBalance is a cheap (1 credit vs the Wallet API's flat 100 —
+  // https://www.helius.dev/docs/billing/credits), independent read of the
+  // exact same on-chain fact as the Wallet API's own `sol` figure. Fetched
+  // in parallel and used below as the source of truth for `sol` — the one
+  // field every deploy/close safety check actually gates on — so a
+  // Wallet-API-specific failure (a degraded response that still parses as
+  // a nominally successful 0 — exactly what caused the earlier "0 SOL
+  // available" incident) can no longer block a deploy on its own. The
+  // Wallet API remains the only source for price/USD/token-list
+  // enrichment, so it's still fetched for everything else `sol` isn't.
+  const rpcBalancePromise = getConnection().getBalance(walletPubkey).then(
+    (lamports) => lamports / LAMPORTS_PER_SOL,
+    () => null, // RPC failed too — fall through to the Wallet API's own number, or 0 if that fails as well
+  );
+
   try {
     const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${HELIUS_KEY}`;
-    const res = await fetch(url);
-    
+    const [res, rpcSol] = await Promise.all([fetch(url), rpcBalancePromise]);
+
     if (!res.ok) {
+      if (rpcSol != null) {
+        log("wallet_warn", `Wallet API failed (${res.status}) — falling back to RPC-only SOL balance (${rpcSol})`);
+        return { wallet: walletAddress, sol: Math.round(rpcSol * 1e6) / 1e6, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, sol_source: "rpc_fallback" };
+      }
       throw new Error(`Helius API error: ${res.status} ${res.statusText}`);
     }
 
@@ -85,10 +105,18 @@ export async function getWalletBalances() {
     const solEntry = balances.find(b => b.mint === config.tokens.SOL || b.symbol === "SOL");
     const usdcEntry = balances.find(b => b.mint === config.tokens.USDC || b.symbol === "USDC");
 
-    const solBalance = solEntry?.balance || 0;
+    const walletApiSol = solEntry?.balance || 0;
     const solPrice = solEntry?.pricePerToken || 0;
-    const solUsd = solEntry?.usdValue || 0;
     const usdcBalance = usdcEntry?.balance || 0;
+
+    // Prefer RPC for `sol` — cheaper and more direct than the Wallet API's
+    // own figure. Only fall back to the Wallet API's number if the RPC
+    // call itself failed. A disagreement beyond dust is logged (it means
+    // one of the two is wrong) but never blocks the caller.
+    const solBalance = rpcSol != null ? rpcSol : walletApiSol;
+    if (rpcSol != null && Math.abs(rpcSol - walletApiSol) > 0.01) {
+      log("wallet_warn", `Wallet API SOL (${walletApiSol}) disagrees with RPC (${rpcSol}) by ${Math.abs(rpcSol - walletApiSol).toFixed(4)} — using RPC value`);
+    }
 
     // ─── Map all tokens ───────────────────────────────────────
     const enrichedTokens = balances.map(b => ({
@@ -102,7 +130,9 @@ export async function getWalletBalances() {
       wallet: walletAddress,
       sol: Math.round(solBalance * 1e6) / 1e6,
       sol_price: Math.round(solPrice * 100) / 100,
-      sol_usd: Math.round(solUsd * 100) / 100,
+      // Recomputed from the (possibly RPC-corrected) sol, not the Wallet
+      // API's own usdValue, so the two returned fields stay consistent.
+      sol_usd: Math.round(solBalance * solPrice * 100) / 100,
       usdc: Math.round(usdcBalance * 100) / 100,
       tokens: enrichedTokens,
       total_usd: Math.round((data.totalUsdValue || 0) * 100) / 100,
