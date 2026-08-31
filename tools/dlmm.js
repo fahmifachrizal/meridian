@@ -25,7 +25,8 @@ import {
 } from "../state/state.js";
 import { recordPerformance } from "../state/lessons.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../state/pool-memory.js";
-import { normalizeMint, swapToken, getWalletBalances, getInsurancePoolBalance } from "./wallet.js";
+import { normalizeMint, swapToken, getInsurancePoolBalance } from "./wallet.js";
+import { refreshWalletBalanceCache } from "../state/wallet-cache.js";
 import { appendDecision } from "../state/decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
 import { getAndClearStagedSignals } from "../state/signal-tracker.js";
@@ -545,7 +546,7 @@ export async function deployPosition({
   // If no explicit SOL amount is provided, fall back to the configured dynamic deploy size.
   const fallbackAmountY =
     amount_y == null && amount_sol == null
-      ? computeDeployAmount((await getWalletBalances()).sol)
+      ? computeDeployAmount((await refreshWalletBalanceCache()).sol)
       : 0;
   let finalAmountY = Number(amount_y ?? amount_sol ?? fallbackAmountY);
   const finalAmountX = Number(amount_x ?? 0);
@@ -633,7 +634,7 @@ export async function deployPosition({
       // unbounded slice of the portfolio.
       const [poolInfo, { sol: walletSol, sol_price: solPrice }, myPositions] = await Promise.all([
         getInsurancePoolBalance(),
-        getWalletBalances(),
+        refreshWalletBalanceCache(),
         getMyPositions({ silent: true }).catch(() => ({ positions: [] })),
       ]);
       const poolUsd = poolInfo.usd;

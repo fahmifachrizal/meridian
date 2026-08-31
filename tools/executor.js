@@ -10,6 +10,7 @@ import {
   searchPools,
 } from "./dlmm.js";
 import { getWalletBalances, swapToken, getInsurancePoolBalance } from "./wallet.js";
+import { refreshWalletBalanceCache } from "../state/wallet-cache.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../state/lessons.js";
 import { setPositionInstruction, setPositionInsuranceSettled, getTrackedPosition, getTrackedPositions } from "../state/state.js";
@@ -764,7 +765,7 @@ async function swapBaseToSolWithRetry(baseMint, label) {
   let lastErr = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const balances = await getWalletBalances({});
+      const balances = await refreshWalletBalanceCache();
       const token = balances.tokens?.find((t) => t.mint === baseMint);
       if (!token || token.usd < 0.10) {
         // Nothing left to swap (already sold or dust) — treat as done.
@@ -962,6 +963,13 @@ export async function executeTool(name, args) {
             result.auto_swap_note = `Base token already auto-swapped back to SOL (${result.base_mint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
             if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
           }
+        } else {
+          // No swap needed (held on purpose, or no base token) — the close
+          // itself still moved SOL via the position withdrawal. The swap
+          // branch above already refreshes the cache as a side effect of
+          // swapBaseToSolWithRetry's own live balance check; this covers
+          // the case where that branch never runs.
+          refreshWalletBalanceCache().catch(() => {});
         }
         // Insurance pool settlement — independent of the base-token swap
         // above (insurance is already the insurance token, not the base token). Never
@@ -1219,7 +1227,7 @@ async function runSafetyChecks(name, args) {
 
       // Check SOL balance
       if (process.env.DRY_RUN !== "true") {
-        const balance = await getWalletBalances();
+        const balance = await refreshWalletBalanceCache();
         const gasReserve = config.management.gasReserve;
         const minRequired = amountY + gasReserve;
         if (balance.sol < minRequired) {
