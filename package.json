@@ -19,7 +19,7 @@
     "pm2:down": "pm2 stop meridian || true && pm2 delete meridian || true",
     "pull:vps": "bash scripts/pull-vps-state.sh",
     "dev": "DRY_RUN=true node index.js",
-    "test": "npm run test:syntax && npm run test:json-store && npm run test:telegram-format && npm run test:concurrent && npm run test:archive && npm run test:guards && npm run test:invariants && npm run test:regime && npm run test:regime-invariants && npm run test:regime-overlay && npm run test:regime-state && npm run test:insurance && npm run test:sanitize-close-reason && npm run test:benchmark && npm run test:benchmark-eval",
+    "test": "npm run test:syntax && npm run test:json-store && npm run test:telegram-format && npm run test:concurrent && npm run test:archive && npm run test:guards && npm run test:invariants && npm run test:regime && npm run test:regime-invariants && npm run test:regime-overlay && npm run test:regime-state && npm run test:insurance && npm run test:sanitize-close-reason && npm run test:benchmark && npm run test:benchmark-eval && npm run test:event-codes && npm run test:repeat-deploy-cooldown-taper",
     "test:syntax": "find . -path ./node_modules -prune -o -name '*.js' -exec node --check {} \\;",
     "test:regime": "DRY_RUN=true NODE_ENV=test node test/test-regime.js",
     "test:regime-invariants": "DRY_RUN=true NODE_ENV=test node test/test-regime-invariants.js",
@@ -40,7 +40,9 @@
     "test:sanitize-close-reason": "DRY_RUN=true NODE_ENV=test node test/test-sanitize-close-reason.js",
     "test:archive": "DRY_RUN=true NODE_ENV=test node test/test-archive.js",
     "test:concurrent": "DRY_RUN=true NODE_ENV=test node test/test-concurrent.js",
-    "test:telegram-format": "DRY_RUN=true NODE_ENV=test node test/test-telegram-format.js"
+    "test:telegram-format": "DRY_RUN=true NODE_ENV=test node test/test-telegram-format.js",
+    "test:event-codes": "DRY_RUN=true NODE_ENV=test node test/test-event-codes.js",
+    "test:repeat-deploy-cooldown-taper": "DRY_RUN=true NODE_ENV=test node test/test-repeat-deploy-cooldown-taper.js"
   },
   "knip": {
     "ignore": [

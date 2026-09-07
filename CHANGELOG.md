@@ -7,6 +7,46 @@ version tags exist in this repo's history, so dates are the anchor.
 
 ---
 
+## 2026-09-07 — Repeat-deploy cooldown taper (opt-in) + token-deploy-count.json
+
+New `management.repeatDeployCooldownTaperEnabled` (default `false`) +
+`repeatDeployCooldownTaperDecrementHours` (default `4`) +
+`repeatDeployCooldownTaperEveryNDeploys` (default `4`) +
+`repeatDeployCooldownTaperMinHours` (default `0`). Not to be confused
+with guard #5's existing `repeatDeploySizeTaperPct` (tapers *deploy
+size*) — this tapers the *duration* of `repeatDeployCooldownHours`
+itself, based on how many times the TOKEN (base_mint, across every pool
+it's ever traded in) has been deployed into in total: every
+`taperEveryNDeploys` deploys, the cooldown drops by
+`taperDecrementHours`, floored at `taperMinHours`. Default schedule (12h
+base): deploys 1-4 → 12h, 5-8 → 8h, 9-12 → 4h, 13+ → 0h (no cooldown at
+all once sufficiently proven, since the floor defaults to 0 — raise
+`taperMinHours` if a nonzero floor is wanted instead).
+
+New `state/token-deploy-count.js` + `token-deploy-count.json` — no
+existing store tracked deploy count *per token across pools*;
+`pool-memory.json`'s `total_deploys` is per-pool, which undercounts a
+token that's relaunched or traded across multiple pools. Seeded once
+from full history via `scripts/backfill-token-deploy-counts.js` (sums
+`deploys.length` across every pool-memory.json entry sharing a
+base_mint), then kept live automatically — `recordPoolDeploy()` calls
+`incrementTokenDeployCount()` on every closed deploy going forward, no
+further backfill ever needed.
+
+Also this session: confirmed via full-history analysis (942 recorded
+closes) that "pumped far above range" — 43.3% of ALL closes, median hold
+11 minutes — is a genuine net-positive pattern (+0.92 SOL across 408
+positions, almost entirely from fee capture as price sweeps through the
+range on its way out), not the breakeven/wasted-capital pattern an
+average-%-only read suggested. A backtested fix (tightening
+`outOfRangeBinsToClose` for high-volatility candidates) was net positive
+in aggregate but regressed 15/103 affected positions — some meaningfully
+(one from +5.48% to -2.44%) — by cutting into that same fee-capture
+window. Not shipped; the existing behavior is already correct. See
+`test/lib/benchmark-eval.js`'s `oorTighten` option and
+`scripts/evaluate-config.js --compare-oor-tightening` for the tooling,
+kept for future reference even though the change itself wasn't adopted.
+
 ## 2026-08-18 — Real-price backtest of the 10% upside headroom; reverted
 
 Built out `test/lib/benchmark-eval.js`'s config backtester to actually

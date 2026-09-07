@@ -82,6 +82,10 @@ export const KEY_GROUPS = {
   repeatDeployCooldownScope: "management",
   repeatDeployCooldownMinFeeEarnedPct: "management",
   repeatDeployCooldownMinFeeYieldPct: "management", // legacy alt name, same guard
+  repeatDeployCooldownTaperEnabled: "management",
+  repeatDeployCooldownTaperDecrementHours: "management",
+  repeatDeployCooldownTaperEveryNDeploys: "management",
+  repeatDeployCooldownTaperMinHours: "management",
   minVolumeToRebalance: "management",
   stopLossPct: "management",
   emergencyPriceDropPct: "management", // legacy alt name for stopLossPct

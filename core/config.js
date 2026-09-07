@@ -135,6 +135,19 @@ export const config = {
     repeatDeployCooldownHours: u.repeatDeployCooldownHours ?? 12,
     repeatDeployCooldownScope: u.repeatDeployCooldownScope ?? "token", // pool | token | both
     repeatDeployCooldownMinFeeEarnedPct: u.repeatDeployCooldownMinFeeEarnedPct ?? u.repeatDeployCooldownMinFeeYieldPct ?? 0,
+    // Opt-in: taper repeatDeployCooldownHours itself down as a TOKEN
+    // (base_mint, across every pool it's ever traded in — see
+    // state/token-deploy-count.js) proves more total deploys — a coin
+    // that's been deployed into repeatedly is a track record, not a fresh
+    // risk. Every `repeatDeployCooldownTaperEveryNDeploys` total deploys,
+    // the cooldown drops by `repeatDeployCooldownTaperDecrementHours`,
+    // floored at `repeatDeployCooldownTaperMinHours`. Default schedule
+    // (12h base, decrement 4h every 4 deploys): deploys 1-4 -> 12h,
+    // deploys 5-8 -> 8h, deploys 9-12 -> 4h, deploys 13+ -> 0h (floor).
+    repeatDeployCooldownTaperEnabled: u.repeatDeployCooldownTaperEnabled ?? false,
+    repeatDeployCooldownTaperDecrementHours: u.repeatDeployCooldownTaperDecrementHours ?? 4,
+    repeatDeployCooldownTaperEveryNDeploys: u.repeatDeployCooldownTaperEveryNDeploys ?? 4,
+    repeatDeployCooldownTaperMinHours: u.repeatDeployCooldownTaperMinHours ?? 0,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
     stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -50,
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
