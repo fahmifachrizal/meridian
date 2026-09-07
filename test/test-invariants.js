@@ -23,7 +23,7 @@ import { repoPath } from "../repo-root.js";
 import { createSuite, withRestoredFile } from "./lib/test-kit.js";
 import { config, MIN_SAFE_BINS_BELOW } from "../core/config.js";
 import { CONFIG_MAP } from "../tools/executor.js";
-import { degenScore } from "../tools/screening.js";
+import { degenScore, getRawPoolScreeningRejectReason } from "../tools/screening.js";
 import { getDeterministicCloseRule } from "../index.js";
 
 const STATE_FILE = repoPath("state.json");
@@ -164,6 +164,52 @@ section("getDeterministicCloseRule() — position lifecycle rule precedence");
     const suspectResult = rule({ pnl_pct: -95, total_value_usd: 5 });
     check("pnlSuspect skips all PnL-based rules when a suspiciously-priced tick still shows real value", suspectResult === null);
   });
+}
+
+// ─── Quote-token-must-be-SOL hard filter ─────────────────────────
+// This agent only supports single-sided SOL deposits — a pool whose quote
+// token isn't SOL can pass every other hard filter and reach deploy_position,
+// where a wide-range (>69 bin) deploy's two-transaction path can leave a
+// real, empty, untracked position on-chain if the deposit instruction then
+// fails (confirmed live against an ANTHROPIC-USDC pool). Locked in here so
+// a future change to this filter's position/logic is caught immediately.
+section("Quote token must be SOL (screening hard filter)");
+{
+  // Deliberately permissive `s` — isolates this one check from every other
+  // threshold, independent of the operator's live config values.
+  const permissiveScreeningConfig = {
+    minMcap: 0, maxMcap: Infinity, minHolders: 0, minVolume: 0,
+    minTvl: 0, maxTvl: null, minBinStep: 0, maxBinStep: Infinity,
+    minFeeActiveTvlRatio: 0, minOrganic: 0, minQuoteOrganic: 0,
+    tokenAgeWindowEnabled: false, minTokenAgeHours: null, maxTokenAgeHours: null,
+    blockedLaunchpads: [], allowedLaunchpads: [],
+  };
+  const basePool = {
+    pool_type: "dlmm",
+    tvl: 100000, active_tvl: 100000, fee_active_tvl_ratio: 1, volatility: 5, volume: 10000,
+    base_token_holders: 1000,
+    dlmm_params: { bin_step: 100 },
+    token_x: { symbol: "FAKE", address: "TEST_FAKE_BASE_MINT_DO_NOT_USE", market_cap: 500000, organic_score: 90 },
+    token_y: { symbol: "SOL", address: config.tokens.SOL, organic_score: 99 },
+  };
+
+  check(
+    "a SOL-quoted pool passes (no rejection from this check)",
+    getRawPoolScreeningRejectReason(basePool, permissiveScreeningConfig) === null,
+  );
+
+  const usdcQuotedPool = { ...basePool, token_y: { symbol: "USDC", address: config.tokens.USDC, organic_score: 99 } };
+  const usdcReason = getRawPoolScreeningRejectReason(usdcQuotedPool, permissiveScreeningConfig);
+  check(
+    "a USDC-quoted pool is rejected, specifically for its quote token",
+    usdcReason != null && usdcReason.includes("quote token") && usdcReason.includes("not SOL"),
+  );
+
+  const nativeSolAliasPool = { ...basePool, token_y: { symbol: "SOL", address: "native", organic_score: 99 } };
+  check(
+    "normalizeMint's SOL aliases (e.g. 'native') are accepted, not just the canonical mint",
+    getRawPoolScreeningRejectReason(nativeSolAliasPool, permissiveScreeningConfig) === null,
+  );
 }
 
 process.exit(suite.finish());

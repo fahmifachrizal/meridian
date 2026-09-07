@@ -40,6 +40,7 @@
 
 import fs from "fs";
 import { flattenConfig } from "../core/config-groups.js";
+import { round2 } from "../core/config.js";
 
 const MULT = "mult";
 const DELTA = "delta";
@@ -129,8 +130,19 @@ export function computeRegimeOverlay(regimeId, baseline) {
     if (rule.ratchet === "up") value = Math.max(value, base);
 
     if (!Number.isFinite(value)) continue;
-    // Round to a sane precision so logs/telegram stay readable.
-    overlay[key] = Math.abs(value) >= 100 ? Math.round(value) : Number(value.toFixed(4));
+    // Round to a sane precision so logs/telegram stay readable. deployAmountSol
+    // specifically gets the same round2 (2-decimal) convention computeDeployAmount()
+    // itself uses — the generic 4-decimal rounding below left values like 0.7*0.85
+    // sitting right on a .xx5 boundary (0.59499999999999997 in true binary), where
+    // a later .toFixed(2) elsewhere could round down instead of up depending on
+    // exact float representation. Rounding to 2 decimals here, at the source,
+    // removes that ambiguity — confirmed live: computeDeployAmount() returned
+    // 0.59 for a regime floor that should have been 0.6 (0.7 baseline * 0.85).
+    if (key === "deployAmountSol") {
+      overlay[key] = round2(value);
+    } else {
+      overlay[key] = Math.abs(value) >= 100 ? Math.round(value) : Number(value.toFixed(4));
+    }
   }
   return overlay;
 }

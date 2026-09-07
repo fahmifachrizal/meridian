@@ -9,6 +9,7 @@ import { checkRepeatDeployCooldown } from "../guards/02-repeat-deploy-cooldown.j
 import { recordTvlSnapshot } from "../guards/04-tvl-decline.js";
 import { fetchWithTimeout } from "../util/fetch-timeout.js";
 import { cachedJson } from "../util/http-cache.js";
+import { normalizeMint } from "./wallet.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
@@ -135,7 +136,7 @@ function getVolatilityTimeframe(sourceTimeframe) {
   return sourceMinutes != null && sourceMinutes >= minMinutes ? source : MIN_VOLATILITY_TIMEFRAME;
 }
 
-function getRawPoolScreeningRejectReason(pool, s) {
+export function getRawPoolScreeningRejectReason(pool, s) {
   const base = pool?.token_x || {};
   const quote = pool?.token_y || {};
   const binStep = numeric(pool?.dlmm_params?.bin_step);
@@ -162,6 +163,23 @@ function getRawPoolScreeningRejectReason(pool, s) {
   if (pool?.quote_token_has_critical_warnings === true) return "quote token has critical warnings";
   if (pool?.base_token_has_high_single_ownership === true) return "base token has high single ownership";
   if (pool?.pool_type && pool.pool_type !== "dlmm") return `pool_type ${pool.pool_type} is not dlmm`;
+
+  // This agent only supports single-sided SOL deposits (amount_x=0, deposit
+  // in the quote token) — a pool whose quote token isn't SOL/wrapped-SOL
+  // can still pass every other filter and reach deploy_position, where the
+  // deposit instruction fails against a token the wallet doesn't hold the
+  // right side of. For a wide-range (>69 bin) deploy this is worse than a
+  // clean failure: the two-transaction path (createExtendedEmptyPosition
+  // then addLiquidityByStrategyChunkable) already created the empty
+  // position account by the time the deposit instruction fails, leaving a
+  // real, untracked, empty position on-chain that cost gas for nothing
+  // (confirmed live: an ANTHROPIC-USDC pool reached deploy_position twice
+  // in one day, the second time leaving exactly this kind of orphan).
+  // Reject here, before any of this, so an incompatible pool never reaches
+  // the LLM or deploy_position at all.
+  if (normalizeMint(quote?.address) !== config.tokens.SOL) {
+    return `quote token ${quote?.symbol || quote?.address || "unknown"} is not SOL — single-sided SOL deploys require a SOL-quoted pool`;
+  }
 
   if (mcap == null || mcap < s.minMcap) return `mcap ${mcap ?? "unknown"} below minMcap ${s.minMcap}`;
   if (mcap > s.maxMcap) return `mcap ${mcap} above maxMcap ${s.maxMcap}`;
