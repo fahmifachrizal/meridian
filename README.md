@@ -723,7 +723,7 @@ stateDiagram-v2
     Deploying --> Rejected: guard blocks\n(repeat-deploy cooldown, TVL decline,\ntoken-age window, hysteresis)
     Rejected --> [*]
 
-    Deploying --> Open: runSafetyChecks passes\n(guard #5 may taper size + tighten stop-loss)
+    Deploying --> Open: runSafetyChecks passes\n(guard #6 may taper size + tighten stop-loss)
 
     state Open {
         [*] --> InRange
@@ -737,7 +737,7 @@ stateDiagram-v2
     InRange --> Closed_LowYield: fee_per_tvl_24h < minFeePerTvl24h\nAND age >= minAgeBeforeYieldCheck
     InRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
     OutOfRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
-    OutOfRange --> Closed_FastExit: pnl_pct <= stopLossPct * fastExitFraction\n(guard #6 — fires before the full OOR wait)
+    OutOfRange --> Closed_FastExit: pnl_pct <= stopLossPct * fastExitFraction\n(guard #8 — fires before the full OOR wait)
     OutOfRange --> Closed_PumpedAbove: active_bin > upper_bin + outOfRangeBinsToClose
     OutOfRange --> Closed_OORWait: minutes_out_of_range >= outOfRangeWaitMinutes
     Open --> Closed_Manual: /close command, or LLM decision\n(position instruction condition met)
@@ -790,12 +790,16 @@ integrations/
 
 guards/
   01-token-age-window.js       through
-  07-avoid-pin.js              — the 7 post-mortem safety guards, one file
-                                 per guard, numbered by execution order
-  08-weekend-fresh-repeat.js   — caps a token to one deploy per Sat 18:00->
+  09-avoid-pin.js              — 9 post-mortem safety guards, one file
+                                 per guard, numbered by true execution order
+                                 across the full lifecycle (screen -> deploy
+                                 -> manage -> close)
+  05-weekend-fresh-repeat.js   — caps a token to one deploy per Sat 18:00->
                                  Mon 04:00 WIB session if it started fresh
                                  (<weekendGuardMaxFreshAgeHours old) that
                                  session; see CHANGELOG for the data behind it
+  07-token-name-penalty.js     — opt-in size penalty for deploys whose token
+                                 name matches an operator-defined pattern
 
 util/
   envcrypt.js         .env encryption

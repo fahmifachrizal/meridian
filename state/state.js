@@ -90,7 +90,7 @@ export function trackPosition({
     entry_volume,
     entry_holders,
     stop_loss_pct_override,
-    // Guard #8 (guards/08-weekend-fresh-repeat.js) — the pool's own age at
+    // Guard #5 (guards/05-weekend-fresh-repeat.js) — the pool's own age at
     // this deploy, so a later repeat this weekend session can check whether
     // THIS deploy was the one that started the token off fresh.
     pool_age_hours_at_deploy,

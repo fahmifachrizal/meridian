@@ -1,5 +1,5 @@
 /**
- * Guard #8 — weekend fresh-token repeat block.
+ * Guard #5 — weekend fresh-token repeat block.
  *
  * Data-driven finding (see the pattern-analysis session that produced this):
  * losses during the Sat 18:00 -> Mon 04:00 WIB window aren't more frequent

@@ -2,18 +2,21 @@ import { getPoolMemory } from "../state/pool-memory.js";
 import { log } from "../logger.js";
 
 /**
- * Guard #5 — repeat-deploy size taper + tightened stop-loss.
+ * Guard #6 — repeat-deploy size taper + tightened stop-loss.
  *
- * Fires 5th in the deploy pipeline (last deploy-gate stage), inside
- * tools/executor.js's runSafetyChecks, deploy_position case tail.
+ * Fires 6th in the full guard pipeline — 3rd within tools/executor.js's
+ * runSafetyChecks deploy-gate stage, after guard #4 (TVL-decline) and
+ * guard #5 (weekend fresh-repeat), and chained into by guard #7
+ * (token-name penalty), which discounts whatever amount this guard
+ * already produced.
  *
  * On a 2nd+ deploy into a pool still inside its early-momentum window (the
- * exact scenario guards #2/#6/#7-old can't help with yet — no repeat-deploy
+ * exact scenario guards #2/#8/#9-old can't help with yet — no repeat-deploy
  * history, no prior close, still within the allowed age window), tapers
  * position size (60%/40% tiers by default) and sets a tighter,
  * position-specific stop-loss override. The override is stored directly on
  * the position record at deploy time and read again during every later
- * management cycle by guards/06-fast-exit.js and getDeterministicCloseRule
+ * management cycle by guards/08-fast-exit.js and getDeterministicCloseRule
  * (via `position.stop_loss_pct_override`) — there is no separate lookup.
  *
  * @returns {{ tapered: boolean, amountY: number, taperSizeCap: number|null, stopLossOverride: number|null }}
@@ -39,7 +42,7 @@ export function computeDeployTaper(poolAddress, requestedAmountY, rawPoolAgeHour
 
   let amountY = requestedAmountY;
   if (amountY > taperSizeCap) {
-    log("screening", `Guard #5: repeat deploy #${priorDeploys + 1} into ${poolAddress.slice(0, 8)} (pool age ${poolAgeHours.toFixed(1)}h) — tapering size from ${amountY} to ${taperSizeCap} SOL`);
+    log("screening", `Guard #6: repeat deploy #${priorDeploys + 1} into ${poolAddress.slice(0, 8)} (pool age ${poolAgeHours.toFixed(1)}h) — tapering size from ${amountY} to ${taperSizeCap} SOL`);
     amountY = taperSizeCap;
   }
 

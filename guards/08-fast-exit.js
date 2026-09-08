@@ -1,5 +1,5 @@
 /**
- * Guard #6 — fast OOR + negative-PnL exit (this is close-side "rule 4" in
+ * Guard #8 — fast OOR + negative-PnL exit (this is close-side "rule 4" in
  * getDeterministicCloseRule's numbering).
  *
  * Fires during the management/close cycle, inside
@@ -12,7 +12,7 @@
  * independent lagging brakes. Close immediately once both conditions hold.
  *
  * @param {number} effectiveStopLossPct - position.stop_loss_pct_override
- *   (set by guard #5) falling back to managementConfig.stopLossPct.
+ *   (set by guard #6) falling back to managementConfig.stopLossPct.
  * @returns {{action: "CLOSE", rule: 4, reason: string} | null}
  */
 export function checkFastExit(position, effectiveStopLossPct, pnlSuspect, managementConfig) {

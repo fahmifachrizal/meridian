@@ -156,20 +156,20 @@ export const config = {
     // Pre-deploy TVL/mcap decline check (guard #4)
     maxTvlSnapshotAgeHours:    u.maxTvlSnapshotAgeHours    ?? 4,
     maxTvlDeclinePctForDeploy: u.maxTvlDeclinePctForDeploy ?? 20,
-    // Fast OOR + negative-PnL exit (guard #6)
+    // Fast OOR + negative-PnL exit (guard #8)
     fastExitOnOorEnabled:    u.fastExitOnOorEnabled    ?? true,
     fastExitStopLossFraction: u.fastExitStopLossFraction ?? 0.5,
-    // AVOID-tagged pinned lessons (guard #7)
+    // AVOID-tagged pinned lessons (guard #9)
     avoidPinThresholdPct: u.avoidPinThresholdPct ?? -10,
     avoidPinMinDeploys:   u.avoidPinMinDeploys   ?? 2,
-    // Repeat-deploy size taper + tightened stop-loss (guard #5) — a 2nd+ deploy
+    // Repeat-deploy size taper + tightened stop-loss (guard #6) — a 2nd+ deploy
     // into the same pool while it's still within the early-momentum window
     // (screening.tokenEarlyWindowMaxHours) is strictly higher variance than the
     // 1st, so it risks less capital and gets cut faster if wrong.
     repeatDeploySizeTaperEnabled: u.repeatDeploySizeTaperEnabled ?? true,
     repeatDeploySizeTaperPct: Array.isArray(u.repeatDeploySizeTaperPct) ? u.repeatDeploySizeTaperPct : [0.6, 0.4],
     repeatDeployStopLossFraction: u.repeatDeployStopLossFraction ?? 0.5,
-    // Token-name pattern size penalty (guard #9) — opt-in, operator-defined
+    // Token-name pattern size penalty (guard #7) — opt-in, operator-defined
     // list of { pattern, penaltyPct } rules. pattern is matched as a
     // case-insensitive substring against the pool/token name; penaltyPct
     // (0-100) cuts the deploy size by that much when it matches (50 = half
@@ -203,7 +203,7 @@ export const config = {
     // unbounded slice of the portfolio.
     insuranceMaxPoolPct:       u.insuranceMaxPoolPct       ?? 30,
 
-    // Guard #8 — weekend fresh-token repeat block (see guards/08-weekend-
+    // Guard #5 — weekend fresh-token repeat block (see guards/05-weekend-
     // fresh-repeat.js for the data behind this). Caps a base_mint to one
     // deploy per weekend session, but only when that token's FIRST deploy
     // the session was into a pool under weekendGuardMaxFreshAgeHours old —

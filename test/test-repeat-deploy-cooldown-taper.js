@@ -2,7 +2,7 @@
  * Repeat-deploy cooldown taper (opt-in) — state/pool-memory.js +
  * state/token-deploy-count.js.
  *
- * Not to be confused with guard #5's repeatDeploySizeTaperPct (tapers
+ * Not to be confused with guard #6's repeatDeploySizeTaperPct (tapers
  * DEPLOY SIZE for repeat deploys within the token-age early window). This
  * is a different mechanism: repeatDeployCooldownHours is the fixed
  * duration applied once a pool/token proves `repeatDeployCooldownTriggerCount`

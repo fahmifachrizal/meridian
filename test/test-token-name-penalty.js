@@ -1,13 +1,13 @@
 /**
- * Offline unit tests for guard #9 — token-name pattern size penalty.
+ * Offline unit tests for guard #7 — token-name pattern size penalty.
  * Pure function, no I/O, no state file involved.
  * Run: node test/test-token-name-penalty.js
  */
 
 import { createSuite } from "./lib/test-kit.js";
-import { computeTokenNamePenalty } from "../guards/09-token-name-penalty.js";
+import { computeTokenNamePenalty } from "../guards/07-token-name-penalty.js";
 
-const suite = createSuite("Guard #9: token-name pattern size penalty");
+const suite = createSuite("Guard #7: token-name pattern size penalty");
 const { section, check } = suite;
 
 function cfg(overrides = {}) {

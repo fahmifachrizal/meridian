@@ -32,7 +32,7 @@ import { getActiveStrategy } from "./state/strategy-library.js";
 import { CONFIG_MAP } from "./tools/executor.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./state/pool-memory.js";
 import { checkRejectionHysteresis } from "./guards/03-rejection-hysteresis.js";
-import { checkFastExit } from "./guards/06-fast-exit.js";
+import { checkFastExit } from "./guards/08-fast-exit.js";
 import { checkSmartWalletsOnPool } from "./state/smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { mapWithConcurrency, valueOr } from "./util/concurrent.js";
@@ -997,7 +997,7 @@ export function getDeterministicCloseRule(position, managementConfig) {
     return false;
   })();
 
-  // Guard #5 (repeat-deploy size taper): a repeat deploy tapered at entry
+  // Guard #6 (repeat-deploy size taper): a repeat deploy tapered at entry
   // gets a tighter, position-specific stop-loss (set on the position at
   // deploy time) instead of the global default.
   const effectiveStopLossPct = position.stop_loss_pct_override ?? managementConfig.stopLossPct;
@@ -1019,7 +1019,7 @@ export function getDeterministicCloseRule(position, managementConfig) {
   ) {
     return { action: "CLOSE", rule: 3, reason: "pumped far above range" };
   }
-  // Guard #6 (fast OOR + negative-PnL exit): see guards/06-fast-exit.js.
+  // Guard #8 (fast OOR + negative-PnL exit): see guards/08-fast-exit.js.
   const fastExitResult = checkFastExit(position, effectiveStopLossPct, pnlSuspect, managementConfig);
   if (fastExitResult) return fastExitResult;
   if (

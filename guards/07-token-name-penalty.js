@@ -1,7 +1,7 @@
 import { round2 } from "../core/config.js";
 
 /**
- * Guard #9 — token-name pattern size penalty.
+ * Guard #7 — token-name pattern size penalty.
  *
  * Opt-in, data-driven from a pool_name/PnL correlation review (no reliable
  * predictive signal was found in general — see CHANGELOG — but the operator
@@ -15,8 +15,8 @@ import { round2 } from "../core/config.js";
  * matching rule applies — rules are not combined/stacked.
  *
  * Fires in tools/executor.js's runSafetyChecks, deploy_position case tail,
- * chained after guard #5's repeat-deploy taper — so it discounts whatever
- * amount guard #5 already produced, not the original requested amount.
+ * chained after guard #6's repeat-deploy taper — so it discounts whatever
+ * amount guard #6 already produced, not the original requested amount.
  *
  * @returns {{ penalized: boolean, amountY: number, matchedPattern: string|null, penaltyPct: number|null }}
  */

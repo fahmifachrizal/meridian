@@ -4,10 +4,10 @@
  * reports what would have happened in pnl_sol / pnl_usd / pnl_pct.
  *
  * Scope: replays guard #1 (token-age window), guard #2 (repeat-deploy
- * cooldown), and guard #5 (repeat-deploy size taper + tightened stop-loss)
+ * cooldown), and guard #6 (repeat-deploy size taper + tightened stop-loss)
  * for the deploy-gate decision, and rules 1/2/4 of
  * getDeterministicCloseRule for the exit (via each position's recorded
- * `timeline`). Guards #3/#4/#7 are NOT replayed — they need
+ * `timeline`). Guards #3/#4/#9 are NOT replayed — they need
  * rejection/TVL-snapshot/pool-average history this fixture doesn't carry
  * meaningfully. A timeline that never trips 1/2/4 falls back to the
  * position's actual historical outcome. See test/test-benchmark-eval.js
@@ -96,7 +96,7 @@ export function wouldDeployUnderConfig(cfg, position, poolMemory) {
     return { deploy: false, blockedBy, sizeSol: 0, stopLossOverride: null };
   }
 
-  // Guard #5 — size taper + tightened stop-loss (only reached if not blocked)
+  // Guard #6 — size taper + tightened stop-loss (only reached if not blocked)
   let sizeSol = position.amount_sol;
   let stopLossOverride = null;
   if (cfg.management.repeatDeploySizeTaperEnabled && position.pool_age_hours_at_deploy != null) {
