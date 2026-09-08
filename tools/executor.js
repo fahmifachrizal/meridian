@@ -19,6 +19,7 @@ import { getPoolMemory, addPoolNote } from "../state/pool-memory.js";
 import { checkTvlDecline, recordTvlSnapshot } from "../guards/04-tvl-decline.js";
 import { computeDeployTaper } from "../guards/05-repeat-deploy-taper.js";
 import { getWeekendFreshRepeatRejectReason, getWeekendSessionBoundsWIB } from "../guards/08-weekend-fresh-repeat.js";
+import { computeTokenNamePenalty } from "../guards/09-token-name-penalty.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../state/strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../state/token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../state/dev-blocklist.js";
@@ -78,6 +79,13 @@ function poolDetailVolatility(pool) {
 
 function poolDetailQuoteMint(pool) {
   return pool?.token_y?.address ?? null;
+}
+
+function poolDetailName(pool) {
+  if (pool?.name) return pool.name;
+  const base = pool?.token_x?.symbol;
+  const quote = pool?.token_y?.symbol;
+  return base && quote ? `${base}-${quote}` : null;
 }
 
 async function fetchFreshPoolDetail(poolAddress, timeframe = config.screening.timeframe || "5m") {
@@ -238,7 +246,7 @@ async function validateDeployPoolThresholds(args) {
     log("deploy_audit_warn", `Could not fetch entry audit snapshot: ${error.message}`);
   }
 
-  return { pass: true, entryMarketData };
+  return { pass: true, entryMarketData, poolName: poolDetailName(detail) };
 }
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
@@ -394,6 +402,9 @@ export const CONFIG_MAP = {
   repeatDeploySizeTaperEnabled: ["management", "repeatDeploySizeTaperEnabled"],
   repeatDeploySizeTaperPct: ["management", "repeatDeploySizeTaperPct"],
   repeatDeployStopLossFraction: ["management", "repeatDeployStopLossFraction"],
+  // guard #9 — token-name pattern size penalty
+  tokenNamePenaltiesEnabled: ["management", "tokenNamePenaltiesEnabled"],
+  tokenNamePenalties: ["management", "tokenNamePenalties"],
   // pnl poller
   pnlConfirmTicks: ["pnl", "confirmTicks"],
   // opportunity poller (interval/enabled changes apply on next restart)
@@ -1216,6 +1227,18 @@ async function runSafetyChecks(name, args) {
         args.stop_loss_pct_override = taperResult.stopLossOverride;
       }
 
+      // Guard #9 (see guards/09-token-name-penalty.js): operator-defined
+      // token-name pattern size penalty, chained after guard #5 so it
+      // discounts whatever amount the taper already produced.
+      const namePenaltyResult = computeTokenNamePenalty(poolThresholds.poolName, amountY, config);
+      let nameSizeCap = null;
+      if (namePenaltyResult.penalized) {
+        log("screening", `Guard #9: token name "${poolThresholds.poolName}" matched pattern "${namePenaltyResult.matchedPattern}" — penalizing size from ${amountY} to ${namePenaltyResult.amountY} SOL (${namePenaltyResult.penaltyPct}% cut)`);
+        amountY = namePenaltyResult.amountY;
+        nameSizeCap = namePenaltyResult.amountY;
+        args.amount_y = amountY;
+      }
+
       // Check amount limits
       if (!Number.isFinite(amountY) || amountY <= 0) {
         return {
@@ -1224,15 +1247,18 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // A guard #5 taper intentionally goes below the normal floor — use its
-      // own (still >= 0.1 SOL) cap as the floor instead of the standard one.
-      // Both sides rounded to 2dp before comparing: computeDeployAmount()
-      // (core/config.js) hands the LLM an already-2dp-rounded number, but
-      // config.management.deployAmountSol itself is a raw float (e.g.
-      // 0.7 * 0.85 is stored as ~0.59499999999999997) — comparing that
-      // directly against the rounded amount the LLM was told to use could
-      // reject a technically-correct deploy by less than half a cent.
-      const minDeploy = round2(taperSizeCap != null ? taperSizeCap : Math.max(0.1, config.management.deployAmountSol));
+      // A guard #5 taper or guard #9 name penalty intentionally goes below
+      // the normal floor — use whichever guard's own (still >= 0.1 SOL) cap
+      // is in effect as the floor instead of the standard one. Guard #9
+      // takes priority since it's chained after #5 (its cap already
+      // incorporates any taper reduction). Both sides rounded to 2dp before
+      // comparing: computeDeployAmount() (core/config.js) hands the LLM an
+      // already-2dp-rounded number, but config.management.deployAmountSol
+      // itself is a raw float (e.g. 0.7 * 0.85 is stored as
+      // ~0.59499999999999997) — comparing that directly against the rounded
+      // amount the LLM was told to use could reject a technically-correct
+      // deploy by less than half a cent.
+      const minDeploy = round2(nameSizeCap != null ? nameSizeCap : taperSizeCap != null ? taperSizeCap : Math.max(0.1, config.management.deployAmountSol));
       const roundedAmountY = round2(amountY);
       if (roundedAmountY < minDeploy) {
         return {
