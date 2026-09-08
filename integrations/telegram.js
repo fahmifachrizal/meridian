@@ -681,22 +681,6 @@ export async function notifyOutOfRange({ pair, minutesOOR }) {
   );
 }
 
-/**
- * Regime transition notice — states plainly that the change is memory-only,
- * so the operator never mistakes it for an edit to their saved baseline.
- */
-export async function notifyRegimeChange({ from, to, reason, changes }) {
-  if (hasActiveLiveMessage()) return;
-  const icon = to === "hot" ? "🔥" : to === "slow" ? "🐢" : "⚖️";
-  const rows = (changes || []).map(({ key, from: f, to: t }) => [key, `${f} → ${t}`]);
-  await sendHTML(
-    `${icon} <b>Regime ${escapeHtml(from)} → ${escapeHtml(to)}</b>\n` +
-    `<i>${escapeHtml(reason || "")}</i>\n` +
-    (rows.length ? htmlTable(rows, { labelWidth: 24 }) : "<pre>no config changes</pre>") +
-    `\n<i>In-memory only — your saved baseline is unchanged.</i>`
-  );
-}
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }

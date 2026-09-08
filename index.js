@@ -21,7 +21,6 @@ import {
   editMessageWithButtons,
   answerCallbackQuery,
   notifyOutOfRange,
-  notifyRegimeChange,
   isEnabled as telegramEnabled,
   createLiveMessage,
   escapeHtml,
@@ -30,9 +29,6 @@ import { noDeployReport, positionBlock, deployedReport } from "./integrations/te
 import { generateBriefing } from "./integrations/briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state/state.js";
 import { getActiveStrategy } from "./state/strategy-library.js";
-import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRelax, isRegimeSuppressed, resetConsecutiveFails } from "./regime/market-regime-library.js";
-import { classifyRegime } from "./regime/market-regime.js";
-import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime/regime-overlay.js";
 import { CONFIG_MAP } from "./tools/executor.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./state/pool-memory.js";
 import { checkRejectionHysteresis } from "./guards/03-rejection-hysteresis.js";
@@ -383,48 +379,6 @@ export async function runManagementCycle({ silent = false } = {}) {
   return mgmtReport;
 }
 
-// ─── Regime overlay application ──────────────────────────────────
-// The agent's ONLY channel for changing config. Bounded and ratcheted by
-// regime-overlay.js, and applied to the live in-memory config ONLY — never
-// written to user-config.json, never pushed to Supabase. Supabase is the
-// operator's source of truth and is pull-only for the agent, so a restart or
-// a Supabase pull always restores the operator's baseline.
-function applyRegimeOverlay(regimeId, reason, prevRegime) {
-  const baseline = readBaseline(repoPath("user-config.json"), config, CONFIG_MAP);
-  const overlay = computeRegimeOverlay(regimeId, baseline);
-  const changed = applyOverlayToLiveConfig(overlay, config, CONFIG_MAP);
-  setActiveRegime({ id: regimeId });
-
-  const detail = describeOverlay(overlay, baseline);
-  appendDecision({
-    type: regimeId === "normal" ? "regime_relax" : "regime_change",
-    actor: "SCREENER",
-    summary: `Regime ${prevRegime} → ${regimeId}`,
-    reason: `${reason} | overlay (memory-only): ${detail}`,
-  });
-  log("cron", `Market regime ${prevRegime} → ${regimeId} (${reason}) — overlay: ${detail}`);
-  notifyRegimeChange({ from: prevRegime, to: regimeId, reason, changes: changed }).catch(() => {});
-  return changed;
-}
-
-// Regime relaxation fallback — see recordScreeningOutcome() in
-// market-regime-library.js for why this is needed on top of classifyRegime().
-// Called once per screening-cycle outcome (deploy / no-deploy); after
-// `relaxAfterFails` consecutive no-deploy cycles it force-relaxes the active
-// regime back to "normal" regardless of what classifyRegime() itself can see,
-// then suppresses re-entry into the regime it just left so the pair of rules
-// cannot oscillate tighten→starve→relax→tighten forever.
-function noteScreeningResult(deployed) {
-  const fails = recordScreeningOutcome({ deployed });
-  if (deployed || !config.regime.enabled) return;
-  const activeId = getActiveRegime()?.id ?? "normal";
-  if (activeId === "normal" || fails < config.regime.relaxAfterFails) return;
-
-  applyRegimeOverlay("normal", `${fails} consecutive screening cycles with no deploy`, activeId);
-  noteRegimeRelax(activeId, config.regime.suppressMinutes * 60_000);
-  log("cron", `Regime ${activeId} suppressed for ${config.regime.suppressMinutes}m to prevent relax/re-tighten oscillation`);
-}
-
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_screeningBusy) {
     if (Date.now() - _screeningBusySince > SCREENING_STALE_LOCK_MS) {
@@ -491,28 +445,6 @@ let deployedCardHtml = null;
     const candidates = (topCandidates?.candidates || topCandidates?.pools || []).slice(0, 10);
     const earlyFilteredExamples = topCandidates?.filtered_examples || [];
 
-    // Market regime detection — classify Slow/Normal/Hot from this cycle's
-    // candidate set and auto-apply the matching config profile (strategy,
-    // screening thresholds, exit rules, sizing) before deployAmount/strategy
-    // are computed below, so a same-cycle regime switch actually takes effect.
-    if (config.regime.enabled) {
-      const { regime, aggregateScore, sampleSize } = classifyRegime(candidates, {
-        targets: config.opportunity,
-        cutoffs: { slowCutoff: config.regime.slowCutoff, hotCutoff: config.regime.hotCutoff },
-      });
-      // NOTE: getActiveRegime() returns the profile object, whose id lives on
-      // `.id` — the old `.active` read was always undefined, so prevRegime was
-      // permanently "normal" and every non-normal detection re-applied config.
-      const prevRegime = getActiveRegime()?.id ?? "normal";
-      if (regime && regime !== prevRegime && isRegimeSuppressed(regime)) {
-        log("cron", `Regime ${regime} detected but suppressed (recently relaxed out of it) — staying on ${prevRegime}`);
-      } else if (regime && regime !== prevRegime) {
-        applyRegimeOverlay(regime, `median degenScore ${aggregateScore.toFixed(1)}, n=${sampleSize}`, prevRegime);
-      }
-    }
-
-    // deployAmount/strategy computed AFTER the regime hook so a same-cycle
-    // switch is reflected in this cycle's deploy sizing and LLM strategy prompt
     const deployAmount = computeDeployAmount(currentBalance.sol);
     log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
 
@@ -600,7 +532,6 @@ let deployedCardHtml = null;
         reason: combinedExamples || "All candidates filtered before deploy",
         rejected: combined.slice(0, 5).map((entry) => `${entry.name}: ${entry.reason}`),
       });
-      noteScreeningResult(false);
       return screenReport;
     }
 
@@ -625,7 +556,6 @@ let deployedCardHtml = null;
           pool: passing[0].pool?.pool,
           pool_name: candidateName,
         });
-        noteScreeningResult(false);
         return screenReport;
       }
     }
@@ -742,7 +672,6 @@ IMPORTANT:
         summary: "LLM chose no deploy",
         reason: stripThink(content).slice(0, 500),
       });
-      noteScreeningResult(false);
       // Same deterministic wrapper as the hallucination-override branch below,
       // for visual consistency — only the header/labels are templated here,
       // the reasoning itself is still the LLM's own text.
@@ -757,7 +686,6 @@ IMPORTANT:
         summary: deployAttempted ? "Deploy attempt did not succeed" : "No successful deploy in screening cycle",
         reason: stripThink(content).slice(0, 500),
       });
-      noteScreeningResult(false);
       // NEVER trust the LLM's own report text here — the SCREENER prompt's
       // "NO HALLUCINATION" rule says it must not claim success without a real
       // tool result, but it does anyway often enough (observed: a "🚀 DEPLOYED"
@@ -772,7 +700,6 @@ IMPORTANT:
         html: false,
       });
     } else {
-      noteScreeningResult(true);
       // Deterministic card, not the LLM's own free-text report — same
       // reasoning as the hallucinated-report override above: an LLM asked
       // to hand-format an aligned metrics table drifts over time. Every
@@ -1077,9 +1004,8 @@ export function getDeterministicCloseRule(position, managementConfig) {
 
   // Rules 1-6 below are numbered in execution/precedence order — the order
   // they're checked in is the order that matters when a position matches
-  // more than one condition at once. See guards/README or CLAUDE.md's
-  // "Market regime overlay" section for the guard-numbering scheme this
-  // mirrors on the deploy side.
+  // more than one condition at once. See CLAUDE.md's guard-numbering scheme
+  // for the equivalent ordering on the deploy side.
   if (!pnlSuspect && position.pnl_pct != null && position.pnl_pct <= effectiveStopLossPct) {
     return { action: "CLOSE", rule: 1, reason: "stop loss" };
   }
@@ -1460,7 +1386,6 @@ function formatHelpText() {
     "/hive pull — manual HiveMind pull now",
     "/pause — stop cron cycles",
     "/resume — start cron cycles again",
-    "/reset-regime — force regime back to normal, reload true screening thresholds",
     "/stop — shut down agent",
   ].join("\n");
 }
@@ -1563,11 +1488,7 @@ async function drainTelegramQueue() {
 
 async function telegramHandler(msg) {
   // In groups Telegram appends "@BotHandle" to slash commands (e.g. "/pool@MeridianFF_bot 2") —
-  // strip it before matching so command handlers below still fire. Includes
-  // "-" so /reset-regime survives the same stripping as the underscore/alnum
-  // commands (Telegram's own bot-command entity parser doesn't allow "-",
-  // but msg.text still carries the full literal string either way, and this
-  // regex is the only place that string gets touched before comparison).
+  // strip it before matching so command handlers below still fire.
   const text = msg?.text?.trim().replace(/^(\/[a-zA-Z0-9_-]+)@\S+/, "$1");
   if (!text) return;
   if (msg?.isCallback && text.startsWith("cfg:")) {
@@ -1795,44 +1716,6 @@ async function telegramHandler(msg) {
       await sendMessage("▶️ Autonomous cycles resumed.").catch(() => {});
     } else {
       await sendMessage("Autonomous cycles are already running.").catch(() => {});
-    }
-    return;
-  }
-
-  if (text === "/reset-regime") {
-    try {
-      const prevRegime = getActiveRegime()?.id ?? "normal";
-      const before = {
-        minTvl: config.screening.minTvl,
-        minVolume: config.screening.minVolume,
-        minOrganic: config.screening.minOrganic,
-        deployAmountSol: config.management.deployAmountSol,
-      };
-      // applyRegimeOverlay resets the regime pointer + the one risk key with
-      // its own normal: factor (deployAmountSol). Screening keys (minTvl/
-      // minVolume/minOrganic) have no normal: factor by design — "normal" is
-      // a no-op for them, so a stuck/drifted value would otherwise survive
-      // this call. reloadScreeningThresholds() forces those straight from
-      // the true on-disk baseline regardless, so this command is a real,
-      // complete reset — not just a regime-pointer flip.
-      applyRegimeOverlay("normal", "manual reset via /reset-regime", prevRegime);
-      reloadScreeningThresholds();
-      resetConsecutiveFails();
-      const after = {
-        minTvl: config.screening.minTvl,
-        minVolume: config.screening.minVolume,
-        minOrganic: config.screening.minOrganic,
-        deployAmountSol: config.management.deployAmountSol,
-      };
-      await sendMessage([
-        `✅ Regime reset: ${prevRegime} → normal`,
-        `minTvl: ${before.minTvl} → ${after.minTvl}`,
-        `minVolume: ${before.minVolume} → ${after.minVolume}`,
-        `minOrganic: ${before.minOrganic} → ${after.minOrganic}`,
-        `deployAmountSol: ${before.deployAmountSol} → ${after.deployAmountSol}`,
-      ].join("\n")).catch(() => {});
-    } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
     return;
   }

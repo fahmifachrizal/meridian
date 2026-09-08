@@ -316,24 +316,6 @@ export const config = {
     targetLiquidity: Number(u.degenTargetLiquidity ?? 20000),
   },
 
-  // ─── Market regime detection (decision-tree config auto-fork) ──
-  regime: {
-    enabled: u.regimeDetectionEnabled ?? true,
-    // classifyRegime()'s median-degenScore cutoffs — below slowCutoff -> "slow",
-    // at/above hotCutoff -> "hot", otherwise "normal". Re-evaluated once per
-    // screening cycle against that cycle's getTopCandidates() result.
-    slowCutoff: Number(u.regimeSlowCutoff ?? 15),
-    hotCutoff: Number(u.regimeHotCutoff ?? 45),
-    // Consecutive no-deploy screening cycles before force-relaxing back to
-    // "normal" — recovers from the tightened-regime feedback loop where a
-    // strict profile starves classifyRegime() of candidates to reclassify from.
-    relaxAfterFails: Number(u.regimeRelaxAfterFails ?? 3),
-    // After relaxing out of a regime, block re-entry into *that same* regime
-    // for this long, so the agent cannot oscillate tighten→starve→relax→repeat.
-    // Other regimes stay reachable, so adaptation is not frozen.
-    suppressMinutes: Number(u.regimeSuppressMinutes ?? 120),
-  },
-
   // ─── GMGN (fee source for minTokenFeesSol gate) ──────────────
   gmgn: {
     apiKey: nonEmptyString(gmgnUserConfig.apiKey, u.gmgnApiKey, process.env.GMGN_API_KEY),

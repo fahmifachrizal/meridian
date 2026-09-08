@@ -32,7 +32,6 @@ strategy-library.json
 decision-log.json
 hivemind-cache.json
 signal-weights.json
-market-regime-profiles.json
 token-deploy-count.json
 
 # Logs

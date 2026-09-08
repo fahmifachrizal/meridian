@@ -12,7 +12,7 @@
 #
 # Everything else (state.json, pool-memory.json, decision-log.json,
 # lessons.json, hivemind-cache.json, signal-weights.json,
-# strategy-library.json, market-regime-profiles.json, token-deploy-count.json,
+# strategy-library.json, token-deploy-count.json,
 # and — if present — smart-wallets.json/token-blacklist.json/
 # dev-blocklist.json/discord-signals.json) is the VPS's live running state,
 # so it IS the ground truth and is pulled verbatim. A file missing on the
@@ -27,11 +27,9 @@
 #     reach them; one `docker exec ... tail` over ssh does.
 #   - A live process snapshot (`pm2 jlist`, `docker ps`) — redundant
 #     corroboration alongside the log files, not a replacement for them.
-#   - Finally runs scripts/show-effective-config.js, which reconstructs the
-#     TRUE live config (baseline + active regime overlay, recomputed locally
-#     with the same pure function the agent itself uses — see that script's
-#     header for why this is exact, not an approximation) and flags
-#     staleness if the VPS has gone quiet.
+#   - Finally runs scripts/show-effective-config.js, which cross-checks the
+#     pulled evidence (PM2 log, decision-log) against the local
+#     user-config.json baseline and flags staleness if the VPS has gone quiet.
 #
 # Usage:
 #   VPS_HOST=deploy@203.0.113.10 VPS_PATH=/home/deploy/meridian ./scripts/pull-vps-state.sh
@@ -118,7 +116,6 @@ VERBATIM_FILES=(
   hivemind-cache.json
   signal-weights.json
   strategy-library.json
-  market-regime-profiles.json
   smart-wallets.json
   token-blacklist.json
   dev-blocklist.json

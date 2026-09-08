@@ -6,8 +6,8 @@
  *      that test-kit's withRestoredFile cannot undo (it snapshots exactly one
  *      path, and appends land in logs/archive/<stream>-YYYYMMDD.jsonl). If
  *      suppression ever regresses, every `npm test` run permanently pollutes
- *      real archives — e.g. test-regime.js calls applyConfigChanges, which
- *      calls addLesson, which archives a lesson.
+ *      real archives — e.g. any test calling applyConfigChanges also calls
+ *      addLesson, which archives a lesson.
  *   2. UTC DATE BUCKETING. Records must land in the shard for their own
  *      timestamp, including across a midnight boundary, or the backfill
  *      collapses real history into one day.

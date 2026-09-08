@@ -312,8 +312,8 @@ function normalizeConfigValue(key, value) {
 
 // Flat key → config section mapping (covers everything in config.js).
 // Shared by update_config (LLM/CLI-driven) and applyConfigChanges' other
-// internal callers (e.g. market-regime auto-switching) — hoisted to module
-// level so it's built once, not per call.
+// internal callers — hoisted to module level so it's built once, not per
+// call.
 export const CONFIG_MAP = {
   // screening
   minFeeActiveTvlRatio: ["screening", "minFeeActiveTvlRatio"],
@@ -394,12 +394,6 @@ export const CONFIG_MAP = {
   repeatDeploySizeTaperEnabled: ["management", "repeatDeploySizeTaperEnabled"],
   repeatDeploySizeTaperPct: ["management", "repeatDeploySizeTaperPct"],
   repeatDeployStopLossFraction: ["management", "repeatDeployStopLossFraction"],
-  // market regime detection (decision-tree config auto-fork)
-  regimeDetectionEnabled: ["regime", "enabled"],
-  regimeSlowCutoff: ["regime", "slowCutoff"],
-  regimeHotCutoff: ["regime", "hotCutoff"],
-  regimeRelaxAfterFails: ["regime", "relaxAfterFails"],
-  regimeSuppressMinutes: ["regime", "suppressMinutes"],
   // pnl poller
   pnlConfirmTicks: ["pnl", "confirmTicks"],
   // opportunity poller (interval/enabled changes apply on next restart)
@@ -484,10 +478,10 @@ const CONFIG_MAP_LOWER = Object.fromEntries(
 /**
  * Apply a set of flat config changes to the live config object and persist
  * them to user-config.json — the shared mutate+persist+notify pipeline used
- * by both the update_config tool (LLM/CLI-driven, one call at a time) and
- * the market-regime auto-switcher (index.js, applies a whole regime profile
- * at once). Extracted verbatim from the former update_config handler body —
- * behavior/return shape is unchanged for existing callers.
+ * by the update_config tool (LLM/CLI-driven, one call at a time) and any
+ * other internal caller that needs to apply several keys atomically.
+ * Extracted verbatim from the former update_config handler body — behavior/
+ * return shape is unchanged for existing callers.
  */
 export function applyConfigChanges(changes, { reason = "", lessonTags = ["self_tune", "config_change"] } = {}) {
   const applied = {};
