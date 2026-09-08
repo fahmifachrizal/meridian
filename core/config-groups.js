@@ -102,6 +102,8 @@ export const KEY_GROUPS = {
   repeatDeploySizeTaperEnabled: "management",
   repeatDeploySizeTaperPct: "management",
   repeatDeployStopLossFraction: "management",
+  tokenNamePenaltiesEnabled: "management",
+  tokenNamePenalties: "management",
   minSolToOpen: "management",
   deployAmountSol: "management",
   gasReserve: "management",

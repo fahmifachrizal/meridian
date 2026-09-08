@@ -169,6 +169,13 @@ export const config = {
     repeatDeploySizeTaperEnabled: u.repeatDeploySizeTaperEnabled ?? true,
     repeatDeploySizeTaperPct: Array.isArray(u.repeatDeploySizeTaperPct) ? u.repeatDeploySizeTaperPct : [0.6, 0.4],
     repeatDeployStopLossFraction: u.repeatDeployStopLossFraction ?? 0.5,
+    // Token-name pattern size penalty (guard #9) — opt-in, operator-defined
+    // list of { pattern, penaltyPct } rules. pattern is matched as a
+    // case-insensitive substring against the pool/token name; penaltyPct
+    // (0-100) cuts the deploy size by that much when it matches (50 = half
+    // size). Only the first matching rule applies.
+    tokenNamePenaltiesEnabled: u.tokenNamePenaltiesEnabled ?? false,
+    tokenNamePenalties: Array.isArray(u.tokenNamePenalties) ? u.tokenNamePenalties : [],
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
