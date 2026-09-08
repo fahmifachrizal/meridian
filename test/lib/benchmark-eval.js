@@ -181,6 +181,18 @@ export function attachPriceOhlcv(positions, ohlcvCache) {
  * tools/dlmm.js) gets tested against real price paths: it shifts
  * `upper_bin` without changing anything else about the replay.
  */
+/**
+ * Deploy timestamp derived from the first recorded timeline tick
+ * (`ts - age_minutes`) — the same derivation deriveBinTimeline() uses
+ * internally, factored out so callers that need "minutes held" (e.g. the
+ * OOR-tightening backtest) don't duplicate it.
+ */
+export function getDeployTimestamp(position) {
+  const firstTick = position.timeline?.[0];
+  if (!firstTick) return null;
+  return new Date(firstTick.ts).getTime() - (firstTick.age_minutes ?? 0) * 60_000;
+}
+
 export function deriveBinTimeline(position, { binsAboveOverride } = {}) {
   const binStep = position.bin_step;
   const binRange = position.bin_range;
@@ -190,8 +202,7 @@ export function deriveBinTimeline(position, { binsAboveOverride } = {}) {
     return null;
   }
 
-  const firstTick = timeline[0];
-  const deployTs = new Date(firstTick.ts).getTime() - (firstTick.age_minutes ?? 0) * 60_000;
+  const deployTs = getDeployTimestamp(position);
 
   let anchorCandle = candles[0];
   let anchorDiff = Math.abs(candles[0].ts - deployTs);
@@ -259,13 +270,32 @@ function interpolatePnlPct(pnlTimeline, ts) {
  * 1/2/3/4/5 all reachable) when the position has usable price/bin data;
  * falls back to `simulateExitUnderConfig` (rules 1/2/4 only, off the
  * coarse recorded `timeline`) otherwise.
+ *
+ * `outOfRangeBinsToCloseOverride`, when given, replaces
+ * `mgmtConfig.outOfRangeBinsToClose` for this replay only (the live config
+ * object is never mutated) — this is how the volatility-tiered
+ * OOR-tightening backtest tests a tighter rule-3 buffer for specific
+ * positions without changing every other position's evaluation.
+ *
+ * Every result also carries `minutes_held`: for a `price_replay` exit,
+ * the real elapsed time from deploy to the triggering candle
+ * (`(tick.ts - deployTs) / 60000`) — the actual metric a capital-velocity
+ * comparison needs. Falls back to the position's real recorded
+ * `minutes_held` for a historical-fallback result, since nothing new was
+ * detected in that case.
  */
-export function simulateExitWithPriceReplay(mgmtConfig, position, stopLossOverride, { binsAboveOverride } = {}) {
+export function simulateExitWithPriceReplay(mgmtConfig, position, stopLossOverride, { binsAboveOverride, outOfRangeBinsToCloseOverride } = {}) {
+  const effectiveConfig = outOfRangeBinsToCloseOverride != null
+    ? { ...mgmtConfig, outOfRangeBinsToClose: outOfRangeBinsToCloseOverride }
+    : mgmtConfig;
+
   const binTicks = deriveBinTimeline(position, { binsAboveOverride });
   if (!binTicks || binTicks.length === 0) {
-    return simulateExitUnderConfig(mgmtConfig, position, stopLossOverride);
+    const fallback = simulateExitUnderConfig(effectiveConfig, position, stopLossOverride);
+    return { ...fallback, minutes_held: fallback.tick?.age_minutes ?? position.outcome.minutes_held };
   }
 
+  const deployTs = getDeployTimestamp(position);
   for (const tick of binTicks) {
     const pnlPct = interpolatePnlPct(position.timeline, tick.ts);
     const fakePosition = {
@@ -277,9 +307,10 @@ export function simulateExitWithPriceReplay(mgmtConfig, position, stopLossOverri
       fee_per_tvl_24h: null,
       stop_loss_pct_override: stopLossOverride ?? null,
     };
-    const result = getDeterministicCloseRule(fakePosition, mgmtConfig);
+    const result = getDeterministicCloseRule(fakePosition, effectiveConfig);
     if (result && [1, 2, 3, 4, 5].includes(result.rule)) {
-      return { pnl_pct: pnlPct, rule: result.rule, reason: result.reason, tick, source: "price_replay" };
+      const minutesHeld = deployTs != null ? (tick.ts - deployTs) / 60_000 : position.outcome.minutes_held;
+      return { pnl_pct: pnlPct, rule: result.rule, reason: result.reason, tick, source: "price_replay", minutes_held: minutesHeld };
     }
   }
   return {
@@ -288,6 +319,7 @@ export function simulateExitWithPriceReplay(mgmtConfig, position, stopLossOverri
     reason: position.outcome.close_reason,
     tick: null,
     source: "historical_fallback",
+    minutes_held: position.outcome.minutes_held,
   };
 }
 
@@ -302,6 +334,15 @@ export function simulateExitWithPriceReplay(mgmtConfig, position, stopLossOverri
  * the price replay as `binsAboveOverride` — the only way to test that
  * change against real price paths, since it's a hardcoded deploy-time
  * calculation, not a config key.
+ *
+ * `opts.oorTighten: { volatilityThreshold, tightenedBins }` — for a
+ * position whose recorded `entry.volatility` exceeds `volatilityThreshold`,
+ * replays rule 3 with `outOfRangeBinsToClose` set to `tightenedBins`
+ * instead of the config's own value. Stays entirely within single-sided-SOL
+ * (no bins_above/token-exposure change) — this only affects how soon an
+ * already-out-of-range position's exit fires. See CHANGELOG's OOR
+ * pumped-above-range analysis for why this is scoped to high-volatility
+ * candidates specifically, not applied globally.
  */
 export function evaluatePosition(cfg, position, poolMemory, opts = {}) {
   const deployResult = wouldDeployUnderConfig(cfg, position, poolMemory);
@@ -318,6 +359,7 @@ export function evaluatePosition(cfg, position, poolMemory, opts = {}) {
       pnl_sol: 0,
       rule: null,
       source: "blocked",
+      minutes_held: null,
     };
   }
 
@@ -327,7 +369,15 @@ export function evaluatePosition(cfg, position, poolMemory, opts = {}) {
     binsAboveOverride = Math.round(paddedBinsBelow * 0.1);
   }
 
-  const exitResult = simulateExitWithPriceReplay(cfg.management, position, deployResult.stopLossOverride, { binsAboveOverride });
+  let outOfRangeBinsToCloseOverride;
+  if (opts.oorTighten) {
+    const volatility = Number(position.entry?.volatility);
+    if (Number.isFinite(volatility) && volatility > opts.oorTighten.volatilityThreshold) {
+      outOfRangeBinsToCloseOverride = opts.oorTighten.tightenedBins;
+    }
+  }
+
+  const exitResult = simulateExitWithPriceReplay(cfg.management, position, deployResult.stopLossOverride, { binsAboveOverride, outOfRangeBinsToCloseOverride });
   const solPriceAtEntry = position.outcome.initial_value_usd / position.amount_sol;
   const scaledInitialValueUsd = position.outcome.initial_value_usd * (deployResult.sizeSol / position.amount_sol);
   const pnlUsd = (exitResult.pnl_pct / 100) * scaledInitialValueUsd;
@@ -344,6 +394,8 @@ export function evaluatePosition(cfg, position, poolMemory, opts = {}) {
     pnl_sol: pnlSol,
     rule: exitResult.rule,
     source: exitResult.source,
+    minutes_held: exitResult.minutes_held,
+    tightened: outOfRangeBinsToCloseOverride != null,
   };
 }
 
@@ -377,6 +429,10 @@ export function evaluateConfig(cfg, positions, poolMemory, opts = {}) {
       blocked_count: results.length - deployedResults.length,
       win_rate: deployedResults.length > 0 ? wins / deployedResults.length : 0,
       avg_pnl_pct: deployedResults.length > 0 ? deployedResults.reduce((s, r) => s + r.pnl_pct, 0) / deployedResults.length : 0,
+      avg_minutes_held: (() => {
+        const withHold = deployedResults.filter((r) => Number.isFinite(r.minutes_held));
+        return withHold.length > 0 ? withHold.reduce((s, r) => s + r.minutes_held, 0) / withHold.length : null;
+      })(),
     },
     comparisonToActual: {
       actual_total_pnl_usd: actualTotalPnlUsd,

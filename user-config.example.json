@@ -73,6 +73,11 @@
   "weekendGuardEndDow": 1,
   "weekendGuardEndHour": 4,
 
+  "repeatDeployCooldownTaperEnabled": false,
+  "repeatDeployCooldownTaperDecrementHours": 4,
+  "repeatDeployCooldownTaperEveryNDeploys": 4,
+  "repeatDeployCooldownTaperMinHours": 0,
+
   "managementIntervalMin": 10,
   "screeningIntervalMin": 30,
   "healthCheckIntervalMin": 60,

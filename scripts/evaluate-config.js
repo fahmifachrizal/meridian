@@ -21,6 +21,14 @@
  *                                                              # the Tier-2 cross-check (see
  *                                                              # test/lib/benchmark-eval.js's file
  *                                                              # header and CHANGELOG)
+ *   node scripts/evaluate-config.js --fixture=market --compare-oor-tightening[=volatility:bins]
+ *                                                              # tests tightening outOfRangeBinsToClose
+ *                                                              # (default 10) to `bins` (default 5) for
+ *                                                              # positions whose entry.volatility exceeds
+ *                                                              # `volatility` (default 5) — stays fully
+ *                                                              # single-sided-SOL, no bins_above/token
+ *                                                              # exposure change. See the pumped-above-
+ *                                                              # range analysis in CHANGELOG.
  *
  * The market fixture doesn't ship its own price_ohlcv_1m — it's merged in
  * here at runtime from scripts/data/pool-first-3days-ohlcv.json (built by
@@ -38,6 +46,15 @@ const fixtureArg = args.find((a) => a.startsWith("--fixture="))?.split("=")[1];
 const candidatePath = args.find((a) => !a.startsWith("--"));
 const applyHeadroom = args.includes("--headroom");
 const compareHeadroom = args.includes("--compare-headroom");
+const oorTighteningArg = args.find((a) => a.startsWith("--compare-oor-tightening"));
+let oorTighten = null;
+if (oorTighteningArg) {
+  const [volStr, binsStr] = (oorTighteningArg.split("=")[1] ?? "").split(":");
+  oorTighten = {
+    volatilityThreshold: volStr ? Number(volStr) : 5,
+    tightenedBins: binsStr ? Number(binsStr) : 5,
+  };
+}
 
 const FIXTURE_FILES = {
   default: "test/fixtures/benchmark-positions.json",
@@ -100,6 +117,7 @@ function printReport(result, label) {
   console.log(`  deployed: ${result.totals.deployed_count}/${result.positions.length}, blocked: ${result.totals.blocked_count}`);
   console.log(`  win rate (of deployed): ${(result.totals.win_rate * 100).toFixed(0)}%`);
   console.log(`  avg pnl_pct (of deployed): ${fmt(result.totals.avg_pnl_pct, 2)}%`);
+  if (result.totals.avg_minutes_held != null) console.log(`  avg minutes_held (of deployed): ${result.totals.avg_minutes_held.toFixed(1)}m`);
   console.log(`  total_pnl_sol: ${fmt(result.totals.total_pnl_sol)} SOL`);
   console.log(`  total_pnl_usd: $${fmt(result.totals.total_pnl_usd, 2)}`);
 
@@ -110,7 +128,48 @@ function printReport(result, label) {
   console.log(`  delta_pnl_usd: $${fmt(result.comparisonToActual.delta_pnl_usd, 2)}`);
 }
 
-if (compareHeadroom) {
+if (oorTighten) {
+  const baseline = evaluateConfig(cfg, positions, poolMemory, {});
+  const tightened = evaluateConfig(cfg, positions, poolMemory, { oorTighten });
+
+  const byPosBaseline = new Map(baseline.positions.map((r) => [r.pool_name + "|" + r.tag, r]));
+  let affectedCount = 0, fasterExitCount = 0, worseCount = 0;
+  const worsePositions = [];
+  for (const r of tightened.positions) {
+    const before = byPosBaseline.get(r.pool_name + "|" + r.tag);
+    if (!before || !r.tightened) continue; // only positions the volatility threshold actually applied to
+    affectedCount++;
+    if (Number.isFinite(before.minutes_held) && Number.isFinite(r.minutes_held) && r.minutes_held < before.minutes_held - 1e-9) fasterExitCount++;
+    // The exact cross-check that caught headroom's failure mode, mirrored:
+    // tightening should never make a position's outcome WORSE (it's the
+    // more conservative direction — exiting sooner should only avoid
+    // downside, not create it). Flag any exception explicitly rather than
+    // assuming it can't happen.
+    if (Number.isFinite(before.pnl_pct) && Number.isFinite(r.pnl_pct) && r.pnl_pct < before.pnl_pct - 1e-9) {
+      worseCount++;
+      worsePositions.push({ pool_name: r.pool_name, tag: r.tag, before_pnl: before.pnl_pct, after_pnl: r.pnl_pct });
+    }
+  }
+
+  printReport(baseline, "baseline outOfRangeBinsToClose");
+  console.log("\n" + "=".repeat(70) + "\n");
+  printReport(tightened, `tightened to ${oorTighten.tightenedBins} bins for volatility > ${oorTighten.volatilityThreshold}`);
+  console.log("\n" + "=".repeat(70));
+  console.log("\nOOR-tightening cross-check:");
+  console.log(`  positions the volatility threshold applied to: ${affectedCount}`);
+  console.log(`  of those, exited strictly faster: ${fasterExitCount}`);
+  console.log(`  of those, pnl_pct got WORSE (should be 0 — tightening is the conservative direction): ${worseCount}`);
+  if (worsePositions.length > 0) {
+    console.log(`  ⚠️  unexpected regression(s):`);
+    for (const p of worsePositions) console.log(`    ${p.pool_name} (${p.tag}): ${fmt(p.before_pnl, 2)}% -> ${fmt(p.after_pnl, 2)}%`);
+  }
+  const avgHeldBefore = baseline.totals.avg_minutes_held;
+  const avgHeldAfter = tightened.totals.avg_minutes_held;
+  if (avgHeldBefore != null && avgHeldAfter != null) {
+    console.log(`  avg minutes_held: baseline ${avgHeldBefore.toFixed(1)}m -> tightened ${avgHeldAfter.toFixed(1)}m (delta ${(avgHeldAfter - avgHeldBefore).toFixed(1)}m)`);
+  }
+  console.log(`  total_pnl_usd: baseline $${fmt(baseline.totals.total_pnl_usd, 2)} -> tightened $${fmt(tightened.totals.total_pnl_usd, 2)} (delta ${fmt(tightened.totals.total_pnl_usd - baseline.totals.total_pnl_usd, 2)})`);
+} else if (compareHeadroom) {
   const noHeadroom = evaluateConfig(cfg, positions, poolMemory, { applyHeadroom: false });
   const withHeadroom = evaluateConfig(cfg, positions, poolMemory, { applyHeadroom: true });
 

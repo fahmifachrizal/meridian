@@ -10,6 +10,7 @@ import { config } from "../core/config.js";
 
 import { repoPath } from "../repo-root.js";
 import { loadCached, saveJson } from "./json-store.js";
+import { getTokenDeployCount, incrementTokenDeployCount } from "./token-deploy-count.js";
 
 const POOL_MEMORY_FILE = repoPath("pool-memory.json");
 const MAX_NOTE_LENGTH = 280;
@@ -144,6 +145,13 @@ export function recordPoolDeploy(poolAddress, deployData) {
   entry.last_deployed_at = deploy.closed_at;
   entry.last_outcome = (deploy.pnl_pct ?? 0) >= 0 ? "profit" : "loss";
 
+  // Keeps token-deploy-count.json live-accurate — every closed deploy,
+  // regardless of whether it trips the repeat-deploy cooldown below. See
+  // state/token-deploy-count.js for why this is tracked separately from
+  // entry.total_deploys (that's per-pool; this is per-token, across every
+  // pool the same base_mint has ever traded in).
+  incrementTokenDeployCount(entry.base_mint || deployData.base_mint);
+
   // Recompute aggregates
   const withPnl = entry.deploys.filter((d) => d.pnl_pct != null);
   if (withPnl.length > 0) {
@@ -200,15 +208,33 @@ export function recordPoolDeploy(poolAddress, deployData) {
       recentRepeatDeploys.every((d) => d.pnl_pct != null && isFeeGeneratingDeploy(d));
 
     if (repeatedFeeGeneratingDeploys) {
+      // Taper (opt-in): the more times this TOKEN has been deployed into
+      // in total (across every pool it's ever traded in — see
+      // state/token-deploy-count.js), the shorter the cooldown gets. Every
+      // `taperEveryNDeploys` total deploys, the cooldown drops by
+      // `taperDecrementHours`, floored at `taperMinHours`. Uses the -1
+      // offset so the Nth deploy in each bracket doesn't round up early —
+      // confirmed against the operator's own worked example: 12h/12h/8h/8h
+      // for deploys 2/4/6/8 with decrement=4, everyN=4.
+      let effectiveCooldownHours = cooldownHours;
+      if (config.management.repeatDeployCooldownTaperEnabled) {
+        const totalTokenDeploys = getTokenDeployCount(entry.base_mint) || entry.total_deploys;
+        const decrementHours = Number(config.management.repeatDeployCooldownTaperDecrementHours ?? 4);
+        const everyNDeploys = Math.max(1, Number(config.management.repeatDeployCooldownTaperEveryNDeploys ?? 4));
+        const minHours = Number(config.management.repeatDeployCooldownTaperMinHours ?? 0);
+        const decrementSteps = Math.floor(Math.max(0, totalTokenDeploys - 1) / everyNDeploys);
+        effectiveCooldownHours = Math.max(minHours, cooldownHours - decrementSteps * decrementHours);
+      }
+
       const reason = `repeat fee-generating deploys (${triggerCount}x)`;
       if (scope === "pool" || scope === "both" || !entry.base_mint) {
-        const poolCooldownUntil = setPoolCooldown(entry, cooldownHours, reason);
-        log("pool-memory", `Cooldown set for ${entry.name} until ${poolCooldownUntil} (${reason})`);
+        const poolCooldownUntil = setPoolCooldown(entry, effectiveCooldownHours, reason);
+        log("pool-memory", `Cooldown set for ${entry.name} until ${poolCooldownUntil} (${reason}${effectiveCooldownHours !== cooldownHours ? `, tapered to ${effectiveCooldownHours.toFixed(1)}h of ${cooldownHours}h` : ""})`);
       }
       if ((scope === "token" || scope === "both") && entry.base_mint) {
-        const mintCooldownUntil = setBaseMintCooldown(db, entry.base_mint, cooldownHours, reason);
+        const mintCooldownUntil = setBaseMintCooldown(db, entry.base_mint, effectiveCooldownHours, reason);
         if (mintCooldownUntil) {
-          log("pool-memory", `Base mint cooldown set for ${entry.base_mint.slice(0, 8)} until ${mintCooldownUntil} (${reason})`);
+          log("pool-memory", `Base mint cooldown set for ${entry.base_mint.slice(0, 8)} until ${mintCooldownUntil} (${reason}${effectiveCooldownHours !== cooldownHours ? `, tapered to ${effectiveCooldownHours.toFixed(1)}h of ${cooldownHours}h` : ""})`);
         }
       }
     }

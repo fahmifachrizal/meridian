@@ -12,11 +12,11 @@
 #
 # Everything else (state.json, pool-memory.json, decision-log.json,
 # lessons.json, hivemind-cache.json, signal-weights.json,
-# strategy-library.json, market-regime-profiles.json, and — if present —
-# smart-wallets.json/token-blacklist.json/dev-blocklist.json/
-# discord-signals.json) is the VPS's live running state, so it IS the ground
-# truth and is pulled verbatim. A file missing on the VPS is skipped, not an
-# error.
+# strategy-library.json, market-regime-profiles.json, token-deploy-count.json,
+# and — if present — smart-wallets.json/token-blacklist.json/
+# dev-blocklist.json/discord-signals.json) is the VPS's live running state,
+# so it IS the ground truth and is pulled verbatim. A file missing on the
+# VPS is skipped, not an error.
 #
 # Also pulls (best-effort, never a hard failure):
 #   - logs/ via rsync — the repo's own rotated logs (logs/agent-*.log,
@@ -123,6 +123,7 @@ VERBATIM_FILES=(
   token-blacklist.json
   dev-blocklist.json
   discord-signals.json
+  token-deploy-count.json
 )
 
 for f in "${VERBATIM_FILES[@]}"; do

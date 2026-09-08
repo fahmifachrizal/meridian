@@ -9,7 +9,7 @@ import {
   closePosition,
   searchPools,
 } from "./dlmm.js";
-import { getWalletBalances, swapToken, getInsurancePoolBalance } from "./wallet.js";
+import { getWalletBalances, swapToken, getInsurancePoolBalance, normalizeMint } from "./wallet.js";
 import { refreshWalletBalanceCache } from "../state/wallet-cache.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../state/lessons.js";
@@ -76,6 +76,10 @@ function poolDetailVolatility(pool) {
   return numberOrNull(pool?.volatility);
 }
 
+function poolDetailQuoteMint(pool) {
+  return pool?.token_y?.address ?? null;
+}
+
 async function fetchFreshPoolDetail(poolAddress, timeframe = config.screening.timeframe || "5m") {
   const encodedTimeframe = encodeURIComponent(timeframe);
   const filter = encodeURIComponent(`pool_address=${poolAddress}`);
@@ -95,6 +99,26 @@ async function validateDeployPoolThresholds(args) {
     return {
       pass: false,
       reason: `Could not verify pool screening thresholds before deploy: ${error.message}`,
+    };
+  }
+
+  // This agent only supports single-sided SOL deposits — a pool whose quote
+  // token isn't SOL/wrapped-SOL can still slip past the screening-side
+  // filter (a different, earlier check in tools/screening.js) via a stale
+  // cached candidate, a Discord signal, or any future path that reaches
+  // deploy_position without going through getTopCandidates. Re-checked here
+  // with a FRESH pool fetch, right before every deploy, as the last gate
+  // before the actual on-chain transaction. Confirmed live: an
+  // ANTHROPIC-USDC pool reached deploy_position, its deposit instruction
+  // failed against the wrong-side token, and — being a wide-range (>69 bin)
+  // deploy — the two-transaction path had already created a real, empty,
+  // untracked position account by the time the deposit failed. Rejecting
+  // here means that transaction is never attempted at all.
+  const quoteMint = poolDetailQuoteMint(detail);
+  if (normalizeMint(quoteMint) !== config.tokens.SOL) {
+    return {
+      pass: false,
+      reason: `Pool quote token is not SOL (${quoteMint || "unknown"}) — single-sided SOL deploys require a SOL-quoted pool.`,
     };
   }
 
@@ -345,6 +369,10 @@ export const CONFIG_MAP = {
   repeatDeployCooldownHours: ["management", "repeatDeployCooldownHours"],
   repeatDeployCooldownScope: ["management", "repeatDeployCooldownScope"],
   repeatDeployCooldownMinFeeEarnedPct: ["management", "repeatDeployCooldownMinFeeEarnedPct"],
+  repeatDeployCooldownTaperEnabled: ["management", "repeatDeployCooldownTaperEnabled"],
+  repeatDeployCooldownTaperDecrementHours: ["management", "repeatDeployCooldownTaperDecrementHours"],
+  repeatDeployCooldownTaperEveryNDeploys: ["management", "repeatDeployCooldownTaperEveryNDeploys"],
+  repeatDeployCooldownTaperMinHours: ["management", "repeatDeployCooldownTaperMinHours"],
   minVolumeToRebalance: ["management", "minVolumeToRebalance"],
   stopLossPct: ["management", "stopLossPct"],
   takeProfitPct: ["management", "takeProfitPct"],
