@@ -457,6 +457,26 @@ export async function createLiveMessage(title, intro = "Starting...", { parseMod
       _liveMessageDepth = Math.max(0, _liveMessageDepth - 1);
       typing.stop();
     },
+    // Like finalize(), but the final edit shows ONLY `finalText` — no title,
+    // no intro, no tool lines. For a cycle whose whole outcome collapses to
+    // one short line ("No candidates survived filtering.") the title/intro
+    // this message opened with is no longer useful context, just clutter.
+    async finalizeReplace(finalText) {
+      if (state.flushTimer) {
+        clearTimeout(state.flushTimer);
+        state.flushTimer = null;
+      }
+      if (state.flushPromise) await state.flushPromise;
+      const text = safeTruncate(finalText);
+      if (!state.messageId) {
+        const sent = await sendMessage(text, { parseMode: state.parseMode });
+        state.messageId = sent?.result?.message_id ?? null;
+      } else {
+        await editMessage(text, state.messageId, { parseMode: state.parseMode });
+      }
+      _liveMessageDepth = Math.max(0, _liveMessageDepth - 1);
+      typing.stop();
+    },
     async fail(errorText) {
       if (state.flushTimer) {
         clearTimeout(state.flushTimer);

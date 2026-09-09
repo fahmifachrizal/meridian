@@ -245,20 +245,30 @@ export async function runManagementCycle({ silent = false } = {}) {
   let mgmtReport = null;
   let positions = [];
   let liveMessage = null;
+  let alreadySentReport = false;
   const screeningCooldownMs = 5 * 60 * 1000;
 
   try {
-    if (!silent && telegramEnabled()) {
-      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...", { parseMode: "HTML" });
-    }
+    // Position count is known before any live-message-worthy work exists —
+    // check it first so the zero-positions case never opens a live message
+    // (typing indicator + a message that would just get overwritten) only
+    // to collapse it down to one line a moment later.
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
 
     if (positions.length === 0) {
       log("cron", "No open positions — triggering screening cycle");
       mgmtReport = "No open positions. Triggering screening cycle.";
+      if (!silent && telegramEnabled()) {
+        sendMessage(mgmtReport).catch(() => {});
+        alreadySentReport = true;
+      }
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
       return mgmtReport;
+    }
+
+    if (!silent && telegramEnabled()) {
+      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...", { parseMode: "HTML" });
     }
 
     // Snapshot + load pool memory
@@ -366,7 +376,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   } finally {
     _managementBusy = false;
     if (!silent && telegramEnabled()) {
-      if (mgmtReport) {
+      if (mgmtReport && !alreadySentReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
         else sendHTML(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
       }
@@ -397,6 +407,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   let prePositions, preBalance;
   let liveMessage = null;
   let screenReport = null;
+  let minimalReport = false;
 let deployedCardHtml = null;
   try {
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), refreshWalletBalanceCache()]);
@@ -521,11 +532,11 @@ let deployedCardHtml = null;
       const combinedExamples = combined.slice(0, 3)
         .map((entry) => `- ${entry.name}: ${entry.reason}`)
         .join("\n");
-      screenReport = noDeployReport({
-        reason: "no candidates survived filtering",
-        rejected: combined.slice(0, 3).map((entry) => `${entry.name} — ${entry.reason}`),
-        html: false,
-      });
+      // Chat-facing text collapses to one line (see finalizeReplace below) —
+      // the full detail (rejection reasons, up to 5 examples) still goes
+      // into decision-log.json via appendDecision, untouched.
+      screenReport = "No candidates survived filtering.";
+      minimalReport = true;
       appendDecision({
         type: "no_deploy",
         actor: "SCREENER",
@@ -744,7 +755,10 @@ IMPORTANT:
         // The report is plain text (LLM-authored or built from pool names) and
         // the live message is HTML-mode, so it must be escaped wholesale.
         const body = escapeHtml(stripThink(screenReport));
-        if (liveMessage) await liveMessage.finalize(body).catch(() => {});
+        if (liveMessage) {
+          if (minimalReport) await liveMessage.finalizeReplace(body).catch(() => {});
+          else await liveMessage.finalize(body).catch(() => {});
+        } else if (minimalReport) sendMessage(stripThink(screenReport)).catch(() => {});
         else sendHTML(`🔍 <b>Screening Cycle</b>\n\n${body}`).catch(() => { });
       }
     }
