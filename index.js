@@ -532,10 +532,16 @@ let deployedCardHtml = null;
       const combinedExamples = combined.slice(0, 3)
         .map((entry) => `- ${entry.name}: ${entry.reason}`)
         .join("\n");
-      // Chat-facing text collapses to one line (see finalizeReplace below) —
-      // the full detail (rejection reasons, up to 5 examples) still goes
-      // into decision-log.json via appendDecision, untouched.
-      screenReport = "No candidates survived filtering.";
+      // Chat-facing text collapses to a header line + up to 3 rejected
+      // candidates (see finalizeReplace below) — the full detail (up to 5
+      // examples) still goes into decision-log.json via appendDecision,
+      // untouched.
+      const rejectedLines = combined.slice(0, 3)
+        .map((entry) => `• ${entry.name} — ${entry.reason}`)
+        .join("\n");
+      screenReport = rejectedLines
+        ? `No candidates survived filtering.\n\n${rejectedLines}`
+        : "No candidates survived filtering.";
       minimalReport = true;
       appendDecision({
         type: "no_deploy",
