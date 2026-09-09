@@ -13,14 +13,18 @@
 # Everything else (state.json, pool-memory.json, decision-log.json,
 # lessons.json, hivemind-cache.json, signal-weights.json,
 # strategy-library.json, market-regime-profiles.json, token-deploy-count.json,
-# and — if present — smart-wallets.json/token-blacklist.json/
-# dev-blocklist.json/discord-signals.json) is the VPS's live running state,
-# so it IS the ground truth and is pulled verbatim. A file missing on the
+# position-price-history.json, recent-deploy-price-history.json,
+# and — if present — smart-wallets.json/
+# token-blacklist.json/dev-blocklist.json/discord-signals.json) is the
+# VPS's live running state, so it IS the ground truth and is pulled
+# verbatim. A file missing on the
 # VPS is skipped, not an error.
 #
 # Also pulls (best-effort, never a hard failure):
 #   - logs/ via rsync — the repo's own rotated logs (logs/agent-*.log,
 #     logs/actions-*.jsonl) AND the dated archive shards (logs/archive/).
+#   - severe-drawdowns/ via rsync — permanent per-position tick-history
+#     snapshots (state/price-tick-log.js), one file per flagged position.
 #   - PM2's raw stdout/stderr tail (last PM2_LOG_LINES lines) from inside the
 #     container, if VPS_CONTAINER is set — these live in the container's own
 #     filesystem, not on the VPS_PATH bind mount, so a plain file copy can't
@@ -124,6 +128,8 @@ VERBATIM_FILES=(
   dev-blocklist.json
   discord-signals.json
   token-deploy-count.json
+  position-price-history.json
+  recent-deploy-price-history.json
 )
 
 for f in "${VERBATIM_FILES[@]}"; do
@@ -168,6 +174,24 @@ if command -v rsync >/dev/null 2>&1; then
   fi
 else
   echo "  skip  logs/ (rsync not found on this machine)"
+fi
+
+echo ""
+echo "==> Pulling severe-drawdowns/ (permanent per-position incident snapshots)"
+echo ""
+
+# One file per flagged position (state/price-tick-log.js) — same rsync
+# pattern as logs/ above. No --delete: these are permanent records, never
+# pruned locally or remotely.
+if command -v rsync >/dev/null 2>&1; then
+  if rsync -az -e "ssh -p ${VPS_PORT} $([ -n "$VPS_KEY" ] && echo "-i $RESOLVED_KEY") -o ConnectTimeout=10" \
+      "${VPS_HOST}:${VPS_PATH}/severe-drawdowns/" "$REPO_ROOT/severe-drawdowns/" 2>/dev/null; then
+    echo "  ok    severe-drawdowns/"
+  else
+    echo "  skip  severe-drawdowns/ (rsync failed — VPS_PATH/severe-drawdowns/ may not exist yet)"
+  fi
+else
+  echo "  skip  severe-drawdowns/ (rsync not found on this machine)"
 fi
 
 echo ""

@@ -16,6 +16,7 @@ import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, g
 import { setPositionInstruction, setPositionInsuranceSettled, getTrackedPosition, getTrackedPositions } from "../state/state.js";
 
 import { getPoolMemory, addPoolNote } from "../state/pool-memory.js";
+import { archiveClosedPosition } from "../state/price-tick-log.js";
 import { checkTvlDecline, recordTvlSnapshot } from "../guards/04-tvl-decline.js";
 import { computeDeployTaper } from "../guards/05-repeat-deploy-taper.js";
 import { getWeekendFreshRepeatRejectReason, getWeekendSessionBoundsWIB } from "../guards/08-weekend-fresh-repeat.js";
@@ -387,6 +388,9 @@ export const CONFIG_MAP = {
   // guard #6 — fast OOR + negative-PnL exit
   fastExitOnOorEnabled: ["management", "fastExitOnOorEnabled"],
   fastExitStopLossFraction: ["management", "fastExitStopLossFraction"],
+  // per-position price/PnL history logging (opt-in) — see state/price-tick-log.js
+  priceTickLogEnabled: ["management", "priceTickLogEnabled"],
+  priceTickHistoryDeployCount: ["management", "priceTickHistoryDeployCount"],
   // guard #7 — AVOID-tagged pinned lessons
   avoidPinThresholdPct: ["management", "avoidPinThresholdPct"],
   avoidPinMinDeploys: ["management", "avoidPinMinDeploys"],
@@ -940,6 +944,7 @@ export async function executeTool(name, args) {
         // getDeterministicCloseRule, or a trailing-TP note) before the LLM is
         // ever invoked — no LLM call involved in producing this text.
         const closeReason = result.close_reason ?? args.reason ?? null;
+        archiveClosedPosition(args.position_address, config);
         recordClose({
           position_id: args.position_address,
           pool_address: result.pool ?? null,

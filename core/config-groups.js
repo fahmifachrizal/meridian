@@ -97,6 +97,8 @@ export const KEY_GROUPS = {
   maxTvlDeclinePctForDeploy: "management",
   fastExitOnOorEnabled: "management",
   fastExitStopLossFraction: "management",
+  priceTickLogEnabled: "management",
+  priceTickHistoryDeployCount: "management",
   avoidPinThresholdPct: "management",
   avoidPinMinDeploys: "management",
   repeatDeploySizeTaperEnabled: "management",

@@ -159,6 +159,16 @@ export const config = {
     // Fast OOR + negative-PnL exit (guard #6)
     fastExitOnOorEnabled:    u.fastExitOnOorEnabled    ?? true,
     fastExitStopLossFraction: u.fastExitStopLossFraction ?? 0.5,
+    // Per-position price/PnL history logging (opt-in) — see
+    // state/price-tick-log.js. Each open position's full deploy-to-close
+    // tick history is kept (uncapped while open); on close it's archived
+    // into a FIFO of the priceTickHistoryDeployCount most recently closed
+    // deploys (oldest evicted, not oldest ticks trimmed). Separately, a
+    // permanent snapshot starts once a position's loss crosses
+    // stopLossPct * fastExitStopLossFraction (the exact same threshold
+    // guard #6 uses for a fast exit — reused here, not duplicated).
+    priceTickLogEnabled:         u.priceTickLogEnabled         ?? false,
+    priceTickHistoryDeployCount: u.priceTickHistoryDeployCount ?? 10,
     // AVOID-tagged pinned lessons (guard #7)
     avoidPinThresholdPct: u.avoidPinThresholdPct ?? -10,
     avoidPinMinDeploys:   u.avoidPinMinDeploys   ?? 2,

@@ -35,6 +35,7 @@ import { classifyRegime } from "./regime/market-regime.js";
 import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime/regime-overlay.js";
 import { CONFIG_MAP } from "./tools/executor.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./state/pool-memory.js";
+import { recordPriceTick } from "./state/price-tick-log.js";
 import { checkRejectionHysteresis } from "./guards/03-rejection-hysteresis.js";
 import { checkFastExit } from "./guards/06-fast-exit.js";
 import { checkSmartWalletsOnPool } from "./state/smart-wallets.js";
@@ -879,6 +880,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
       if (!result?.positions?.length) return;
       for (const p of result.positions) {
         confirmPeak(p.position, p.pnl_pct, confirmTicks);
+        recordPriceTick(p.position, { pool: p.pool, pair: p.pair, pnl_pct: p.pnl_pct, pnl_usd: p.pnl_usd, active_bin: p.active_bin, in_range: p.in_range, age_minutes: p.age_minutes }, config);
 
         // Detect an exit signal this tick (rule-based exits, then deterministic close rules).
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
