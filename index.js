@@ -26,7 +26,7 @@ import {
   createLiveMessage,
   escapeHtml,
 } from "./integrations/telegram.js";
-import { noDeployReport, positionBlock, deployedReport } from "./integrations/telegram-format.js";
+import { noDeployReport, positionBlock, deployedReport, formatErrorForTelegram, describeErrorForTelegram } from "./integrations/telegram-format.js";
 import { generateBriefing } from "./integrations/briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state/state.js";
 import { getActiveStrategy } from "./state/strategy-library.js";
@@ -1579,7 +1579,7 @@ async function telegramHandler(msg) {
     return;
   }
   if (text === "/settings" || text === "/menu" || text === "/configmenu") {
-    await showSettingsMenu().catch((e) => sendMessage(`Settings error: ${e.message}`).catch(() => {}));
+    await showSettingsMenu().catch((e) => sendMessage(formatErrorForTelegram(e.message, { prefix: "Settings error" })).catch(() => {}));
     return;
   }
   if (_managementBusy || _screeningBusy || busy) {
@@ -1597,7 +1597,7 @@ async function telegramHandler(msg) {
       const briefing = await generateBriefing();
       await sendHTML(briefing);
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1619,7 +1619,7 @@ async function telegramHandler(msg) {
         : "";
       await sendMessage(`${formatWalletStatus(wallet, positions)}${suffix}`).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1641,7 +1641,7 @@ async function telegramHandler(msg) {
         return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
       });
       await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
-    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    } catch (e) { await sendMessage(formatErrorForTelegram(e.message)).catch(() => {}); }
     return;
   }
 
@@ -1663,7 +1663,7 @@ async function telegramHandler(msg) {
         pos.instruction ? `Note: ${pos.instruction}` : null,
       ].filter(Boolean).join("\n"));
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1682,9 +1682,9 @@ async function telegramHandler(msg) {
         const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
         await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
       } else {
-        await sendMessage(`❌ Close failed: ${result.error || result.reason || "unknown error"}`);
+        await sendMessage(`❌ ${formatErrorForTelegram(result.error || result.reason || "unknown error", { tag: "close_error", prefix: "Close failed" })}`);
       }
-    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    } catch (e) { await sendMessage(formatErrorForTelegram(e.message)).catch(() => {}); }
     return;
   }
 
@@ -1697,14 +1697,14 @@ async function telegramHandler(msg) {
       for (const pos of positions) {
         try {
           const result = await closePosition({ position_address: pos.position });
-          results.push(`${pos.pair}: ${result.success ? "closed" : `failed (${result.error || "unknown"})`}`);
+          results.push(`${pos.pair}: ${result.success ? "closed" : `failed (${describeErrorForTelegram(result.error || "unknown", "close_error")})`}`);
         } catch (error) {
-          results.push(`${pos.pair}: failed (${error.message})`);
+          results.push(`${pos.pair}: failed (${describeErrorForTelegram(error.message, "close_error")})`);
         }
       }
       await sendMessage(`Close-all finished.\n\n${results.join("\n")}`).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1719,7 +1719,7 @@ async function telegramHandler(msg) {
       const pos = positions[idx];
       setPositionInstruction(pos.position, note);
       await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
-    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    } catch (e) { await sendMessage(formatErrorForTelegram(e.message)).catch(() => {}); }
     return;
   }
 
@@ -1738,7 +1738,7 @@ async function telegramHandler(msg) {
       }
       await sendMessage(`✅ Updated ${key} = ${JSON.stringify(value)}`).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1747,7 +1747,7 @@ async function telegramHandler(msg) {
     try {
       await sendMessage(await runDeterministicScreen(5)).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1774,7 +1774,7 @@ async function telegramHandler(msg) {
         result.txs?.length ? `Tx: ${result.txs[0]}` : null,
       ].filter(Boolean).join("\n")).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1863,7 +1863,7 @@ async function telegramHandler(msg) {
         isManualPull ? "Manual pull: completed" : null,
       ].join("\n")).catch(() => {});
     } catch (e) {
-      await sendMessage(`HiveMind error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message, { tag: "HIVEMIND", prefix: "HiveMind error" })).catch(() => {});
     }
     return;
   }
@@ -1896,8 +1896,8 @@ async function telegramHandler(msg) {
     if (liveMessage) await liveMessage.finalize(escapeHtml(stripThink(content)));
     else await sendMessage(stripThink(content));
   } catch (e) {
-    if (liveMessage) await liveMessage.fail(e.message).catch(() => {});
-    else await sendMessage(`Error: ${e.message}`).catch(() => {});
+    if (liveMessage) await liveMessage.fail(formatErrorForTelegram(e.message)).catch(() => {});
+    else await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
   } finally {
     busy = false;
     refreshPrompt();
