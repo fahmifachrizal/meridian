@@ -340,6 +340,14 @@ All persistent files are loaded/saved on each call — no in-memory caching laye
 
 `reloadScreeningThresholds()` (config.js:236) is called by `evolveThresholds` to re-apply changes to the in-memory `config` without process restart.
 
+**Adding or refactoring any config value**: besides `core/config.js`'s default and `tools/executor.js`'s `CONFIG_MAP` entry (see "Adding a new tool" pattern above for the analogous checklist), also add/move the key in the matching group of the operator's own `user-config.json` (grouped by section — see "Persistent files" above) so the operator's live/VPS/Supabase copies can actually pick it up; the code alone won't put it there. When reporting the change back to the operator, always include the exact JSON snippet showing which group it goes under, e.g.:
+
+```json
+{ "management": { "newKey": 10 } }
+```
+
+so they know precisely where to paste it — don't just name the key, since a wrong group means `flattenConfig()`/`groupConfig()` won't resolve it to where `core/config.js` actually reads from.
+
 ---
 
 ## Environment variables (`.env`)
