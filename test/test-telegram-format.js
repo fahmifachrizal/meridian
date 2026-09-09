@@ -22,6 +22,8 @@ import {
   positionBlock,
   noDeployReport,
   deployedReport,
+  describeErrorForTelegram,
+  formatErrorForTelegram,
 } from "../integrations/telegram-format.js";
 
 const suite = createSuite("telegram-format — safe, compact messages");
@@ -192,6 +194,30 @@ section("deployedReport");
 
   check("smart wallet names are listed when present", deployedReport({ ...base, smartWalletNames: ["alpha1", "alpha2"] }).includes("alpha1, alpha2"));
   check("'none' shown when no smart wallets present", r.includes("none"));
+}
+
+section("describeErrorForTelegram / formatErrorForTelegram — event-codes-routed Telegram errors");
+{
+  check(
+    "a recognized pattern resolves to the stable human label, not the raw message",
+    describeErrorForTelegram("429 Too Many Requests") === "Helius rate limit (429 Too Many Requests)",
+  );
+  check(
+    "an unrecognized (GENERAL_ERROR) message keeps its full original text, unmodified",
+    describeErrorForTelegram("some brand-new never-seen-before failure xyz123") === "some brand-new never-seen-before failure xyz123",
+  );
+  check(
+    "tag narrows classification the same way classifyEvent does (HiveMind auth vs generic unavailability)",
+    describeErrorForTelegram("Invalid HiveMind API key", "HIVEMIND") === "HiveMind: invalid API key",
+  );
+  check(
+    "an unmatched message under a HIVEMIND tag still falls to the tag-only HIVEMIND_UNAVAILABLE bucket",
+    describeErrorForTelegram("connection reset", "HIVEMIND") === "HiveMind: request failed or unreachable",
+  );
+
+  check("formatErrorForTelegram wraps with the default 'Error:' prefix", formatErrorForTelegram("429 Too Many Requests").startsWith("Error: Helius rate limit"));
+  check("formatErrorForTelegram honors a custom prefix", formatErrorForTelegram("bad key", { prefix: "Settings error" }).startsWith("Settings error: "));
+  check("formatErrorForTelegram never hides a novel error's detail", formatErrorForTelegram("wildly specific detail 42").includes("wildly specific detail 42"));
 }
 
 section("escapeHtml");

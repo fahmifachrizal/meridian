@@ -24,8 +24,35 @@
 // safeTruncate lives in telegram.js (transport primitive) and is re-exported
 // here so callers have one formatting import.
 import { escapeHtml, htmlTable, safeTruncate, TELEGRAM_LIMIT } from "./telegram.js";
+import { classifyEvent } from "../util/event-codes.js";
 
 export { safeTruncate, TELEGRAM_LIMIT };
+
+/**
+ * Resolve a caught error's TEXT via the event-codes taxonomy
+ * (util/event-codes.js) — a recognized pattern (Helius rate limits,
+ * Jupiter swap failures, LLM provider errors, a stale blockhash, ...)
+ * becomes a stable, human-readable sentence instead of whatever raw
+ * exception string happened to be thrown. Unrecognized errors
+ * (GENERAL_ERROR) are NEVER hidden or paraphrased — they keep their full
+ * original message, exactly as before this existed, so a genuinely novel
+ * or user-input-specific error (an invalid /setcfg key, an out-of-range
+ * /close index) never loses detail behind a generic label.
+ *
+ * `tag` is optional (mirrors this repo's `log(tag, message)` convention)
+ * — most Telegram command-handler catches have no natural tag, and that's
+ * fine, since most taxonomy rules match on message content alone
+ * regardless of tag.
+ */
+export function describeErrorForTelegram(message, tag = "") {
+  const { code, label } = classifyEvent(tag, message);
+  return code === "GENERAL_ERROR" ? message : label;
+}
+
+/** Same resolution as describeErrorForTelegram(), with a "Prefix: " wrapper — the shape every top-level command-handler catch wants. */
+export function formatErrorForTelegram(message, { tag = "", prefix = "Error" } = {}) {
+  return `${prefix}: ${describeErrorForTelegram(message, tag)}`;
+}
 
 /**
  * A titled block: bold heading, optional aligned label/value table, optional
