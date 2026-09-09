@@ -658,7 +658,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       }
       const cooldownCheck = checkRepeatDeployCooldown(p.pool, p.base?.mint);
       if (cooldownCheck.blocked) {
-        if (cooldownCheck.reason === "pool cooldown active") {
+        if (cooldownCheck.type === "pool") {
           log("screening", `Filtered cooldown pool ${p.name} (${p.pool.slice(0, 8)})`);
         } else {
           log("screening", `Filtered cooldown token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)})`);

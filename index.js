@@ -21,22 +21,19 @@ import {
   editMessageWithButtons,
   answerCallbackQuery,
   notifyOutOfRange,
-  notifyRegimeChange,
   isEnabled as telegramEnabled,
   createLiveMessage,
   escapeHtml,
 } from "./integrations/telegram.js";
-import { noDeployReport, positionBlock, deployedReport } from "./integrations/telegram-format.js";
+import { noDeployReport, positionBlock, deployedReport, formatErrorForTelegram, describeErrorForTelegram } from "./integrations/telegram-format.js";
 import { generateBriefing } from "./integrations/briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, confirmPeak, registerExitSignal } from "./state/state.js";
 import { getActiveStrategy } from "./state/strategy-library.js";
-import { getActiveRegime, setActiveRegime, recordScreeningOutcome, noteRegimeRelax, isRegimeSuppressed, resetConsecutiveFails } from "./regime/market-regime-library.js";
-import { classifyRegime } from "./regime/market-regime.js";
-import { computeRegimeOverlay, applyOverlayToLiveConfig, readBaseline, describeOverlay } from "./regime/regime-overlay.js";
 import { CONFIG_MAP } from "./tools/executor.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./state/pool-memory.js";
+import { recordPriceTick } from "./state/price-tick-log.js";
 import { checkRejectionHysteresis } from "./guards/03-rejection-hysteresis.js";
-import { checkFastExit } from "./guards/06-fast-exit.js";
+import { checkFastExit } from "./guards/08-fast-exit.js";
 import { checkSmartWalletsOnPool } from "./state/smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { mapWithConcurrency, valueOr } from "./util/concurrent.js";
@@ -248,20 +245,30 @@ export async function runManagementCycle({ silent = false } = {}) {
   let mgmtReport = null;
   let positions = [];
   let liveMessage = null;
+  let alreadySentReport = false;
   const screeningCooldownMs = 5 * 60 * 1000;
 
   try {
-    if (!silent && telegramEnabled()) {
-      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...", { parseMode: "HTML" });
-    }
+    // Position count is known before any live-message-worthy work exists —
+    // check it first so the zero-positions case never opens a live message
+    // (typing indicator + a message that would just get overwritten) only
+    // to collapse it down to one line a moment later.
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
 
     if (positions.length === 0) {
       log("cron", "No open positions — triggering screening cycle");
       mgmtReport = "No open positions. Triggering screening cycle.";
+      if (!silent && telegramEnabled()) {
+        sendMessage(mgmtReport).catch(() => {});
+        alreadySentReport = true;
+      }
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
       return mgmtReport;
+    }
+
+    if (!silent && telegramEnabled()) {
+      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...", { parseMode: "HTML" });
     }
 
     // Snapshot + load pool memory
@@ -369,7 +376,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   } finally {
     _managementBusy = false;
     if (!silent && telegramEnabled()) {
-      if (mgmtReport) {
+      if (mgmtReport && !alreadySentReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
         else sendHTML(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
       }
@@ -381,48 +388,6 @@ export async function runManagementCycle({ silent = false } = {}) {
     }
   }
   return mgmtReport;
-}
-
-// ─── Regime overlay application ──────────────────────────────────
-// The agent's ONLY channel for changing config. Bounded and ratcheted by
-// regime-overlay.js, and applied to the live in-memory config ONLY — never
-// written to user-config.json, never pushed to Supabase. Supabase is the
-// operator's source of truth and is pull-only for the agent, so a restart or
-// a Supabase pull always restores the operator's baseline.
-function applyRegimeOverlay(regimeId, reason, prevRegime) {
-  const baseline = readBaseline(repoPath("user-config.json"), config, CONFIG_MAP);
-  const overlay = computeRegimeOverlay(regimeId, baseline);
-  const changed = applyOverlayToLiveConfig(overlay, config, CONFIG_MAP);
-  setActiveRegime({ id: regimeId });
-
-  const detail = describeOverlay(overlay, baseline);
-  appendDecision({
-    type: regimeId === "normal" ? "regime_relax" : "regime_change",
-    actor: "SCREENER",
-    summary: `Regime ${prevRegime} → ${regimeId}`,
-    reason: `${reason} | overlay (memory-only): ${detail}`,
-  });
-  log("cron", `Market regime ${prevRegime} → ${regimeId} (${reason}) — overlay: ${detail}`);
-  notifyRegimeChange({ from: prevRegime, to: regimeId, reason, changes: changed }).catch(() => {});
-  return changed;
-}
-
-// Regime relaxation fallback — see recordScreeningOutcome() in
-// market-regime-library.js for why this is needed on top of classifyRegime().
-// Called once per screening-cycle outcome (deploy / no-deploy); after
-// `relaxAfterFails` consecutive no-deploy cycles it force-relaxes the active
-// regime back to "normal" regardless of what classifyRegime() itself can see,
-// then suppresses re-entry into the regime it just left so the pair of rules
-// cannot oscillate tighten→starve→relax→tighten forever.
-function noteScreeningResult(deployed) {
-  const fails = recordScreeningOutcome({ deployed });
-  if (deployed || !config.regime.enabled) return;
-  const activeId = getActiveRegime()?.id ?? "normal";
-  if (activeId === "normal" || fails < config.regime.relaxAfterFails) return;
-
-  applyRegimeOverlay("normal", `${fails} consecutive screening cycles with no deploy`, activeId);
-  noteRegimeRelax(activeId, config.regime.suppressMinutes * 60_000);
-  log("cron", `Regime ${activeId} suppressed for ${config.regime.suppressMinutes}m to prevent relax/re-tighten oscillation`);
 }
 
 export async function runScreeningCycle({ silent = false } = {}) {
@@ -442,6 +407,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   let prePositions, preBalance;
   let liveMessage = null;
   let screenReport = null;
+  let minimalReport = false;
 let deployedCardHtml = null;
   try {
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), refreshWalletBalanceCache()]);
@@ -491,28 +457,6 @@ let deployedCardHtml = null;
     const candidates = (topCandidates?.candidates || topCandidates?.pools || []).slice(0, 10);
     const earlyFilteredExamples = topCandidates?.filtered_examples || [];
 
-    // Market regime detection — classify Slow/Normal/Hot from this cycle's
-    // candidate set and auto-apply the matching config profile (strategy,
-    // screening thresholds, exit rules, sizing) before deployAmount/strategy
-    // are computed below, so a same-cycle regime switch actually takes effect.
-    if (config.regime.enabled) {
-      const { regime, aggregateScore, sampleSize } = classifyRegime(candidates, {
-        targets: config.opportunity,
-        cutoffs: { slowCutoff: config.regime.slowCutoff, hotCutoff: config.regime.hotCutoff },
-      });
-      // NOTE: getActiveRegime() returns the profile object, whose id lives on
-      // `.id` — the old `.active` read was always undefined, so prevRegime was
-      // permanently "normal" and every non-normal detection re-applied config.
-      const prevRegime = getActiveRegime()?.id ?? "normal";
-      if (regime && regime !== prevRegime && isRegimeSuppressed(regime)) {
-        log("cron", `Regime ${regime} detected but suppressed (recently relaxed out of it) — staying on ${prevRegime}`);
-      } else if (regime && regime !== prevRegime) {
-        applyRegimeOverlay(regime, `median degenScore ${aggregateScore.toFixed(1)}, n=${sampleSize}`, prevRegime);
-      }
-    }
-
-    // deployAmount/strategy computed AFTER the regime hook so a same-cycle
-    // switch is reflected in this cycle's deploy sizing and LLM strategy prompt
     const deployAmount = computeDeployAmount(currentBalance.sol);
     log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
 
@@ -588,11 +532,17 @@ let deployedCardHtml = null;
       const combinedExamples = combined.slice(0, 3)
         .map((entry) => `- ${entry.name}: ${entry.reason}`)
         .join("\n");
-      screenReport = noDeployReport({
-        reason: "no candidates survived filtering",
-        rejected: combined.slice(0, 3).map((entry) => `${entry.name} — ${entry.reason}`),
-        html: false,
-      });
+      // Chat-facing text collapses to a header line + up to 3 rejected
+      // candidates (see finalizeReplace below) — the full detail (up to 5
+      // examples) still goes into decision-log.json via appendDecision,
+      // untouched.
+      const rejectedLines = combined.slice(0, 3)
+        .map((entry) => `• ${entry.name} — ${entry.reason}`)
+        .join("\n");
+      screenReport = rejectedLines
+        ? `No candidates survived filtering.\n\n${rejectedLines}`
+        : "No candidates survived filtering.";
+      minimalReport = true;
       appendDecision({
         type: "no_deploy",
         actor: "SCREENER",
@@ -600,7 +550,6 @@ let deployedCardHtml = null;
         reason: combinedExamples || "All candidates filtered before deploy",
         rejected: combined.slice(0, 5).map((entry) => `${entry.name}: ${entry.reason}`),
       });
-      noteScreeningResult(false);
       return screenReport;
     }
 
@@ -625,7 +574,6 @@ let deployedCardHtml = null;
           pool: passing[0].pool?.pool,
           pool_name: candidateName,
         });
-        noteScreeningResult(false);
         return screenReport;
       }
     }
@@ -742,7 +690,6 @@ IMPORTANT:
         summary: "LLM chose no deploy",
         reason: stripThink(content).slice(0, 500),
       });
-      noteScreeningResult(false);
       // Same deterministic wrapper as the hallucination-override branch below,
       // for visual consistency — only the header/labels are templated here,
       // the reasoning itself is still the LLM's own text.
@@ -757,7 +704,6 @@ IMPORTANT:
         summary: deployAttempted ? "Deploy attempt did not succeed" : "No successful deploy in screening cycle",
         reason: stripThink(content).slice(0, 500),
       });
-      noteScreeningResult(false);
       // NEVER trust the LLM's own report text here — the SCREENER prompt's
       // "NO HALLUCINATION" rule says it must not claim success without a real
       // tool result, but it does anyway often enough (observed: a "🚀 DEPLOYED"
@@ -772,7 +718,6 @@ IMPORTANT:
         html: false,
       });
     } else {
-      noteScreeningResult(true);
       // Deterministic card, not the LLM's own free-text report — same
       // reasoning as the hallucinated-report override above: an LLM asked
       // to hand-format an aligned metrics table drifts over time. Every
@@ -816,7 +761,10 @@ IMPORTANT:
         // The report is plain text (LLM-authored or built from pool names) and
         // the live message is HTML-mode, so it must be escaped wholesale.
         const body = escapeHtml(stripThink(screenReport));
-        if (liveMessage) await liveMessage.finalize(body).catch(() => {});
+        if (liveMessage) {
+          if (minimalReport) await liveMessage.finalizeReplace(body).catch(() => {});
+          else await liveMessage.finalize(body).catch(() => {});
+        } else if (minimalReport) sendMessage(stripThink(screenReport)).catch(() => {});
         else sendHTML(`🔍 <b>Screening Cycle</b>\n\n${body}`).catch(() => { });
       }
     }
@@ -879,6 +827,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
       if (!result?.positions?.length) return;
       for (const p of result.positions) {
         confirmPeak(p.position, p.pnl_pct, confirmTicks);
+        recordPriceTick(p.position, { pool: p.pool, pair: p.pair, pnl_pct: p.pnl_pct, pnl_usd: p.pnl_usd, active_bin: p.active_bin, in_range: p.in_range, age_minutes: p.age_minutes }, config);
 
         // Detect an exit signal this tick (rule-based exits, then deterministic close rules).
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
@@ -1070,16 +1019,15 @@ export function getDeterministicCloseRule(position, managementConfig) {
     return false;
   })();
 
-  // Guard #5 (repeat-deploy size taper): a repeat deploy tapered at entry
+  // Guard #6 (repeat-deploy size taper): a repeat deploy tapered at entry
   // gets a tighter, position-specific stop-loss (set on the position at
   // deploy time) instead of the global default.
   const effectiveStopLossPct = position.stop_loss_pct_override ?? managementConfig.stopLossPct;
 
   // Rules 1-6 below are numbered in execution/precedence order — the order
   // they're checked in is the order that matters when a position matches
-  // more than one condition at once. See guards/README or CLAUDE.md's
-  // "Market regime overlay" section for the guard-numbering scheme this
-  // mirrors on the deploy side.
+  // more than one condition at once. See CLAUDE.md's guard-numbering scheme
+  // for the equivalent ordering on the deploy side.
   if (!pnlSuspect && position.pnl_pct != null && position.pnl_pct <= effectiveStopLossPct) {
     return { action: "CLOSE", rule: 1, reason: "stop loss" };
   }
@@ -1093,7 +1041,7 @@ export function getDeterministicCloseRule(position, managementConfig) {
   ) {
     return { action: "CLOSE", rule: 3, reason: "pumped far above range" };
   }
-  // Guard #6 (fast OOR + negative-PnL exit): see guards/06-fast-exit.js.
+  // Guard #8 (fast OOR + negative-PnL exit): see guards/08-fast-exit.js.
   const fastExitResult = checkFastExit(position, effectiveStopLossPct, pnlSuspect, managementConfig);
   if (fastExitResult) return fastExitResult;
   if (
@@ -1460,7 +1408,6 @@ function formatHelpText() {
     "/hive pull — manual HiveMind pull now",
     "/pause — stop cron cycles",
     "/resume — start cron cycles again",
-    "/reset-regime — force regime back to normal, reload true screening thresholds",
     "/stop — shut down agent",
   ].join("\n");
 }
@@ -1563,11 +1510,7 @@ async function drainTelegramQueue() {
 
 async function telegramHandler(msg) {
   // In groups Telegram appends "@BotHandle" to slash commands (e.g. "/pool@MeridianFF_bot 2") —
-  // strip it before matching so command handlers below still fire. Includes
-  // "-" so /reset-regime survives the same stripping as the underscore/alnum
-  // commands (Telegram's own bot-command entity parser doesn't allow "-",
-  // but msg.text still carries the full literal string either way, and this
-  // regex is the only place that string gets touched before comparison).
+  // strip it before matching so command handlers below still fire.
   const text = msg?.text?.trim().replace(/^(\/[a-zA-Z0-9_-]+)@\S+/, "$1");
   if (!text) return;
   if (msg?.isCallback && text.startsWith("cfg:")) {
@@ -1579,7 +1522,7 @@ async function telegramHandler(msg) {
     return;
   }
   if (text === "/settings" || text === "/menu" || text === "/configmenu") {
-    await showSettingsMenu().catch((e) => sendMessage(`Settings error: ${e.message}`).catch(() => {}));
+    await showSettingsMenu().catch((e) => sendMessage(formatErrorForTelegram(e.message, { prefix: "Settings error" })).catch(() => {}));
     return;
   }
   if (_managementBusy || _screeningBusy || busy) {
@@ -1597,7 +1540,7 @@ async function telegramHandler(msg) {
       const briefing = await generateBriefing();
       await sendHTML(briefing);
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1619,7 +1562,7 @@ async function telegramHandler(msg) {
         : "";
       await sendMessage(`${formatWalletStatus(wallet, positions)}${suffix}`).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1641,7 +1584,7 @@ async function telegramHandler(msg) {
         return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
       });
       await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
-    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    } catch (e) { await sendMessage(formatErrorForTelegram(e.message)).catch(() => {}); }
     return;
   }
 
@@ -1663,7 +1606,7 @@ async function telegramHandler(msg) {
         pos.instruction ? `Note: ${pos.instruction}` : null,
       ].filter(Boolean).join("\n"));
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1682,9 +1625,9 @@ async function telegramHandler(msg) {
         const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
         await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
       } else {
-        await sendMessage(`❌ Close failed: ${result.error || result.reason || "unknown error"}`);
+        await sendMessage(`❌ ${formatErrorForTelegram(result.error || result.reason || "unknown error", { tag: "close_error", prefix: "Close failed" })}`);
       }
-    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    } catch (e) { await sendMessage(formatErrorForTelegram(e.message)).catch(() => {}); }
     return;
   }
 
@@ -1697,14 +1640,14 @@ async function telegramHandler(msg) {
       for (const pos of positions) {
         try {
           const result = await closePosition({ position_address: pos.position });
-          results.push(`${pos.pair}: ${result.success ? "closed" : `failed (${result.error || "unknown"})`}`);
+          results.push(`${pos.pair}: ${result.success ? "closed" : `failed (${describeErrorForTelegram(result.error || "unknown", "close_error")})`}`);
         } catch (error) {
-          results.push(`${pos.pair}: failed (${error.message})`);
+          results.push(`${pos.pair}: failed (${describeErrorForTelegram(error.message, "close_error")})`);
         }
       }
       await sendMessage(`Close-all finished.\n\n${results.join("\n")}`).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1719,7 +1662,7 @@ async function telegramHandler(msg) {
       const pos = positions[idx];
       setPositionInstruction(pos.position, note);
       await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
-    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    } catch (e) { await sendMessage(formatErrorForTelegram(e.message)).catch(() => {}); }
     return;
   }
 
@@ -1738,7 +1681,7 @@ async function telegramHandler(msg) {
       }
       await sendMessage(`✅ Updated ${key} = ${JSON.stringify(value)}`).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1747,7 +1690,7 @@ async function telegramHandler(msg) {
     try {
       await sendMessage(await runDeterministicScreen(5)).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1774,7 +1717,7 @@ async function telegramHandler(msg) {
         result.txs?.length ? `Tx: ${result.txs[0]}` : null,
       ].filter(Boolean).join("\n")).catch(() => {});
     } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
     }
     return;
   }
@@ -1795,44 +1738,6 @@ async function telegramHandler(msg) {
       await sendMessage("▶️ Autonomous cycles resumed.").catch(() => {});
     } else {
       await sendMessage("Autonomous cycles are already running.").catch(() => {});
-    }
-    return;
-  }
-
-  if (text === "/reset-regime") {
-    try {
-      const prevRegime = getActiveRegime()?.id ?? "normal";
-      const before = {
-        minTvl: config.screening.minTvl,
-        minVolume: config.screening.minVolume,
-        minOrganic: config.screening.minOrganic,
-        deployAmountSol: config.management.deployAmountSol,
-      };
-      // applyRegimeOverlay resets the regime pointer + the one risk key with
-      // its own normal: factor (deployAmountSol). Screening keys (minTvl/
-      // minVolume/minOrganic) have no normal: factor by design — "normal" is
-      // a no-op for them, so a stuck/drifted value would otherwise survive
-      // this call. reloadScreeningThresholds() forces those straight from
-      // the true on-disk baseline regardless, so this command is a real,
-      // complete reset — not just a regime-pointer flip.
-      applyRegimeOverlay("normal", "manual reset via /reset-regime", prevRegime);
-      reloadScreeningThresholds();
-      resetConsecutiveFails();
-      const after = {
-        minTvl: config.screening.minTvl,
-        minVolume: config.screening.minVolume,
-        minOrganic: config.screening.minOrganic,
-        deployAmountSol: config.management.deployAmountSol,
-      };
-      await sendMessage([
-        `✅ Regime reset: ${prevRegime} → normal`,
-        `minTvl: ${before.minTvl} → ${after.minTvl}`,
-        `minVolume: ${before.minVolume} → ${after.minVolume}`,
-        `minOrganic: ${before.minOrganic} → ${after.minOrganic}`,
-        `deployAmountSol: ${before.deployAmountSol} → ${after.deployAmountSol}`,
-      ].join("\n")).catch(() => {});
-    } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
     return;
   }
@@ -1863,7 +1768,7 @@ async function telegramHandler(msg) {
         isManualPull ? "Manual pull: completed" : null,
       ].join("\n")).catch(() => {});
     } catch (e) {
-      await sendMessage(`HiveMind error: ${e.message}`).catch(() => {});
+      await sendMessage(formatErrorForTelegram(e.message, { tag: "HIVEMIND", prefix: "HiveMind error" })).catch(() => {});
     }
     return;
   }
@@ -1896,8 +1801,8 @@ async function telegramHandler(msg) {
     if (liveMessage) await liveMessage.finalize(escapeHtml(stripThink(content)));
     else await sendMessage(stripThink(content));
   } catch (e) {
-    if (liveMessage) await liveMessage.fail(e.message).catch(() => {});
-    else await sendMessage(`Error: ${e.message}`).catch(() => {});
+    if (liveMessage) await liveMessage.fail(formatErrorForTelegram(e.message)).catch(() => {});
+    else await sendMessage(formatErrorForTelegram(e.message)).catch(() => {});
   } finally {
     busy = false;
     refreshPrompt();

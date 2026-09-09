@@ -372,6 +372,27 @@ export function isBaseMintOnCooldown(baseMint) {
   );
 }
 
+export function getPoolCooldownRemainingMs(poolAddress) {
+  if (!poolAddress) return 0;
+  const db = load();
+  const entry = db[poolAddress];
+  if (!entry?.cooldown_until) return 0;
+  return new Date(entry.cooldown_until).getTime() - Date.now();
+}
+
+export function getBaseMintCooldownRemainingMs(baseMint) {
+  if (!baseMint) return 0;
+  const db = load();
+  const now = Date.now();
+  let maxRemaining = 0;
+  for (const entry of Object.values(db)) {
+    if (entry?.base_mint !== baseMint || !entry?.base_mint_cooldown_until) continue;
+    const remaining = new Date(entry.base_mint_cooldown_until).getTime() - now;
+    if (remaining > maxRemaining) maxRemaining = remaining;
+  }
+  return maxRemaining;
+}
+
 // ─── Read ──────────────────────────────────────────────────────
 
 /**

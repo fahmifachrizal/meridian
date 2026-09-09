@@ -8,10 +8,6 @@
  * precedence (see README.md's "Position lifecycle" diagram — this file is
  * the executable version of that diagram).
  *
- * Regime-specific invariants (market-regime profile completeness,
- * classifyRegime()'s return-domain contract) live in
- * test/test-regime-invariants.js on feat/add-regime-check.
- *
  * Offline, no network, no wallet. Any check that touches a real JSON store
  * snapshots and restores it via test/lib/test-kit.js.
  *

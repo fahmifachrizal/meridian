@@ -16,9 +16,11 @@ import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, g
 import { setPositionInstruction, setPositionInsuranceSettled, getTrackedPosition, getTrackedPositions } from "../state/state.js";
 
 import { getPoolMemory, addPoolNote } from "../state/pool-memory.js";
+import { archiveClosedPosition } from "../state/price-tick-log.js";
 import { checkTvlDecline, recordTvlSnapshot } from "../guards/04-tvl-decline.js";
-import { computeDeployTaper } from "../guards/05-repeat-deploy-taper.js";
-import { getWeekendFreshRepeatRejectReason, getWeekendSessionBoundsWIB } from "../guards/08-weekend-fresh-repeat.js";
+import { computeDeployTaper } from "../guards/06-repeat-deploy-taper.js";
+import { getWeekendFreshRepeatRejectReason, getWeekendSessionBoundsWIB } from "../guards/05-weekend-fresh-repeat.js";
+import { computeTokenNamePenalty } from "../guards/07-token-name-penalty.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../state/strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../state/token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../state/dev-blocklist.js";
@@ -78,6 +80,13 @@ function poolDetailVolatility(pool) {
 
 function poolDetailQuoteMint(pool) {
   return pool?.token_y?.address ?? null;
+}
+
+function poolDetailName(pool) {
+  if (pool?.name) return pool.name;
+  const base = pool?.token_x?.symbol;
+  const quote = pool?.token_y?.symbol;
+  return base && quote ? `${base}-${quote}` : null;
 }
 
 async function fetchFreshPoolDetail(poolAddress, timeframe = config.screening.timeframe || "5m") {
@@ -238,7 +247,7 @@ async function validateDeployPoolThresholds(args) {
     log("deploy_audit_warn", `Could not fetch entry audit snapshot: ${error.message}`);
   }
 
-  return { pass: true, entryMarketData };
+  return { pass: true, entryMarketData, poolName: poolDetailName(detail) };
 }
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
@@ -312,8 +321,8 @@ function normalizeConfigValue(key, value) {
 
 // Flat key → config section mapping (covers everything in config.js).
 // Shared by update_config (LLM/CLI-driven) and applyConfigChanges' other
-// internal callers (e.g. market-regime auto-switching) — hoisted to module
-// level so it's built once, not per call.
+// internal callers — hoisted to module level so it's built once, not per
+// call.
 export const CONFIG_MAP = {
   // screening
   minFeeActiveTvlRatio: ["screening", "minFeeActiveTvlRatio"],
@@ -384,22 +393,22 @@ export const CONFIG_MAP = {
   // guard #4 — pre-deploy TVL/mcap decline check
   maxTvlSnapshotAgeHours: ["management", "maxTvlSnapshotAgeHours"],
   maxTvlDeclinePctForDeploy: ["management", "maxTvlDeclinePctForDeploy"],
-  // guard #6 — fast OOR + negative-PnL exit
+  // guard #8 — fast OOR + negative-PnL exit
   fastExitOnOorEnabled: ["management", "fastExitOnOorEnabled"],
   fastExitStopLossFraction: ["management", "fastExitStopLossFraction"],
-  // guard #7 — AVOID-tagged pinned lessons
+  // per-position price/PnL history logging (opt-in) — see state/price-tick-log.js
+  priceTickLogEnabled: ["management", "priceTickLogEnabled"],
+  priceTickHistoryDeployCount: ["management", "priceTickHistoryDeployCount"],
+  // guard #9 — AVOID-tagged pinned lessons
   avoidPinThresholdPct: ["management", "avoidPinThresholdPct"],
   avoidPinMinDeploys: ["management", "avoidPinMinDeploys"],
-  // guard #5 — repeat-deploy size taper + tightened stop-loss
+  // guard #6 — repeat-deploy size taper + tightened stop-loss
   repeatDeploySizeTaperEnabled: ["management", "repeatDeploySizeTaperEnabled"],
   repeatDeploySizeTaperPct: ["management", "repeatDeploySizeTaperPct"],
   repeatDeployStopLossFraction: ["management", "repeatDeployStopLossFraction"],
-  // market regime detection (decision-tree config auto-fork)
-  regimeDetectionEnabled: ["regime", "enabled"],
-  regimeSlowCutoff: ["regime", "slowCutoff"],
-  regimeHotCutoff: ["regime", "hotCutoff"],
-  regimeRelaxAfterFails: ["regime", "relaxAfterFails"],
-  regimeSuppressMinutes: ["regime", "suppressMinutes"],
+  // guard #7 — token-name pattern size penalty
+  tokenNamePenaltiesEnabled: ["management", "tokenNamePenaltiesEnabled"],
+  tokenNamePenalties: ["management", "tokenNamePenalties"],
   // pnl poller
   pnlConfirmTicks: ["pnl", "confirmTicks"],
   // opportunity poller (interval/enabled changes apply on next restart)
@@ -484,10 +493,10 @@ const CONFIG_MAP_LOWER = Object.fromEntries(
 /**
  * Apply a set of flat config changes to the live config object and persist
  * them to user-config.json — the shared mutate+persist+notify pipeline used
- * by both the update_config tool (LLM/CLI-driven, one call at a time) and
- * the market-regime auto-switcher (index.js, applies a whole regime profile
- * at once). Extracted verbatim from the former update_config handler body —
- * behavior/return shape is unchanged for existing callers.
+ * by the update_config tool (LLM/CLI-driven, one call at a time) and any
+ * other internal caller that needs to apply several keys atomically.
+ * Extracted verbatim from the former update_config handler body — behavior/
+ * return shape is unchanged for existing callers.
  */
 export function applyConfigChanges(changes, { reason = "", lessonTags = ["self_tune", "config_change"] } = {}) {
   const applied = {};
@@ -940,6 +949,7 @@ export async function executeTool(name, args) {
         // getDeterministicCloseRule, or a trailing-TP note) before the LLM is
         // ever invoked — no LLM call involved in producing this text.
         const closeReason = result.close_reason ?? args.reason ?? null;
+        archiveClosedPosition(args.position_address, config);
         recordClose({
           position_id: args.position_address,
           pool_address: result.pool ?? null,
@@ -1087,8 +1097,8 @@ async function runSafetyChecks(name, args) {
       if (!poolThresholds.pass) return poolThresholds;
       if (poolThresholds.entryMarketData) Object.assign(args, poolThresholds.entryMarketData);
 
-      // Guard #8 — weekend fresh-token repeat block (see
-      // guards/08-weekend-fresh-repeat.js). Only relevant Sat 18:00 -> Mon
+      // Guard #5 — weekend fresh-token repeat block (see
+      // guards/05-weekend-fresh-repeat.js). Only relevant Sat 18:00 -> Mon
       // 04:00 WIB by default; fails open outside that window or if
       // base_mint is unknown.
       if (config.management.weekendGuardEnabled && args.base_mint) {
@@ -1209,7 +1219,7 @@ async function runSafetyChecks(name, args) {
         }
       }
 
-      // Guard #5 (see guards/05-repeat-deploy-taper.js): taper size + tighten
+      // Guard #6 (see guards/06-repeat-deploy-taper.js): taper size + tighten
       // stop-loss on a 2nd+ deploy into a pool still inside its
       // early-momentum window — the exact scenario where guards 1/2/3
       // can't help yet (no repeat-deploy history, no prior close, still
@@ -1222,6 +1232,18 @@ async function runSafetyChecks(name, args) {
         args.stop_loss_pct_override = taperResult.stopLossOverride;
       }
 
+      // Guard #7 (see guards/07-token-name-penalty.js): operator-defined
+      // token-name pattern size penalty, chained after guard #6 so it
+      // discounts whatever amount the taper already produced.
+      const namePenaltyResult = computeTokenNamePenalty(poolThresholds.poolName, amountY, config);
+      let nameSizeCap = null;
+      if (namePenaltyResult.penalized) {
+        log("screening", `Guard #7: token name "${poolThresholds.poolName}" matched pattern "${namePenaltyResult.matchedPattern}" — penalizing size from ${amountY} to ${namePenaltyResult.amountY} SOL (${namePenaltyResult.penaltyPct}% cut)`);
+        amountY = namePenaltyResult.amountY;
+        nameSizeCap = namePenaltyResult.amountY;
+        args.amount_y = amountY;
+      }
+
       // Check amount limits
       if (!Number.isFinite(amountY) || amountY <= 0) {
         return {
@@ -1230,15 +1252,18 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // A guard #5 taper intentionally goes below the normal floor — use its
-      // own (still >= 0.1 SOL) cap as the floor instead of the standard one.
-      // Both sides rounded to 2dp before comparing: computeDeployAmount()
-      // (core/config.js) hands the LLM an already-2dp-rounded number, but
-      // config.management.deployAmountSol itself is a raw float (e.g.
-      // 0.7 * 0.85 is stored as ~0.59499999999999997) — comparing that
-      // directly against the rounded amount the LLM was told to use could
-      // reject a technically-correct deploy by less than half a cent.
-      const minDeploy = round2(taperSizeCap != null ? taperSizeCap : Math.max(0.1, config.management.deployAmountSol));
+      // A guard #6 taper or guard #7 name penalty intentionally goes below
+      // the normal floor — use whichever guard's own (still >= 0.1 SOL) cap
+      // is in effect as the floor instead of the standard one. Guard #7
+      // takes priority since it's chained after #6 (its cap already
+      // incorporates any taper reduction). Both sides rounded to 2dp before
+      // comparing: computeDeployAmount() (core/config.js) hands the LLM an
+      // already-2dp-rounded number, but config.management.deployAmountSol
+      // itself is a raw float (e.g. 0.7 * 0.85 is stored as
+      // ~0.59499999999999997) — comparing that directly against the rounded
+      // amount the LLM was told to use could reject a technically-correct
+      // deploy by less than half a cent.
+      const minDeploy = round2(nameSizeCap != null ? nameSizeCap : taperSizeCap != null ? taperSizeCap : Math.max(0.1, config.management.deployAmountSol));
       const roundedAmountY = round2(amountY);
       if (roundedAmountY < minDeploy) {
         return {

@@ -12,7 +12,7 @@ import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } f
 import { repoPath } from "../repo-root.js";
 import { loadCached, saveJson } from "./json-store.js";
 import { archiveAppend } from "./archive.js";
-import { shouldPinAvoid } from "../guards/07-avoid-pin.js";
+import { shouldPinAvoid } from "../guards/09-avoid-pin.js";
 import { flattenConfig, groupConfig } from "../core/config-groups.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
@@ -182,7 +182,7 @@ export async function recordPerformance(perf) {
       exit_volume: perf.exit_volume,
     });
 
-    // Guard #7 (see guards/07-avoid-pin.js): pin an AVOID lesson for pools
+    // Guard #9 (see guards/09-avoid-pin.js): pin an AVOID lesson for pools
     // with a proven bad track record so they outrank the normal recency cap
     // in future SCREENER prompts instead of aging out like any other lesson.
     const { getPoolMemory } = await import("./pool-memory.js");

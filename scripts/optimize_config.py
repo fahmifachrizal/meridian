@@ -14,15 +14,10 @@ candidate config changes is whether that deploy would have been ALLOWED at
 all. Summing real pnl_usd over "would have been allowed" positions is a
 clean historical replay, no simulation involved.
 
-Market-regime overlay: confirmed enabled in the live config
-(config.regime.enabled, default true) and currently active="normal"
-(market-regime-profiles.json). It modulates these same screening thresholds
-(minOrganic, minFeeActiveTvlRatio, minTvl, minVolume) within bounded
-multipliers depending on regime — not a separate dimension worth grid-
-searching on top of this (the sweep below already covers the range regime
-would push thresholds into); see CLAUDE.md's "Market regime overlay"
-section for the full mechanism if you want to replicate its state machine
-instead of just its threshold range.
+Note: the adaptive market-regime overlay that used to modulate these same
+screening thresholds (minOrganic, minFeeActiveTvlRatio, minTvl, minVolume)
+at runtime has been removed — the sweep below is now the whole picture,
+not a range regime would additionally push thresholds into.
 
 Requires: pandas, numpy
 Run: python3 scripts/optimize_config.py
@@ -244,10 +239,6 @@ def main():
     }
     print("\n=== Live config baseline ===")
     print(json.dumps(evaluate(df, live_params), indent=2, default=str))
-
-    print(f"\nRegime overlay: enabled={cfg.get('regimeDetectionEnabled', True)}, "
-          f"currently modulates minOrganic/minFeeActiveTvlRatio/minTvl/minVolume within bounded "
-          f"factors around whatever baseline is found below — not swept separately (see file header).")
 
     grid = {
         "tokenEarlyWindowMaxHours": [3, 6, 12],

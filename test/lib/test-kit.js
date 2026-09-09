@@ -6,7 +6,7 @@
  *     `import`s a Suite, runs check()/section() calls, then calls
  *     suite.finish() to print a summary and exit(0|1).
  *   - Any test that touches a real JSON store (pool-memory.json,
- *     market-regime-profiles.json, user-config.json, ...) MUST snapshot it
+ *     user-config.json, ...) MUST snapshot it
  *     with withRestoredFile()/snapshotFile() and restore it — tests must
  *     never leave a footprint in real trading/config data.
  */

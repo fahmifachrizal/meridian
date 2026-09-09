@@ -462,11 +462,8 @@ Meridian sends notifications automatically for:
 - OOR alerts when a position leaves range past `outOfRangeWaitMinutes`
 - Deploy: pair, amount, position address, tx hash
 - Close: pair and PnL
-- Regime changes: which config keys shifted and by how much, explicitly
-  labeled **in-memory only** so it's never mistaken for an edit to your saved
-  `user-config.json`/Supabase baseline
 
-All structured notifications (deploy/close/swap/config-change/OOR/regime) and
+All structured notifications (deploy/close/swap/config-change/OOR) and
 the live Screening/Management Cycle messages render as HTML — aligned
 `<pre>` label/value tables via a shared `htmlTable()` helper, with every
 dynamic value escaped so a stray `<`/`&` in a pool name or LLM-authored report
@@ -525,22 +522,6 @@ All fields are optional — defaults shown. Edit `user-config.json`.
 | `trailingTriggerPct` | `3` | Activate trailing TP at this PnL % |
 | `trailingDropPct` | `1.5` | Close when PnL drops this % from peak |
 | `strategy` | `bid_ask` | LP strategy: `spot`, `bid_ask`, or `curve` |
-
-### Market regime
-
-See [Market regime state machine](#market-regime-state-machine) for how these
-interact. `regimeSlowCutoff`/`regimeHotCutoff` gate `classifyRegime()`;
-`regimeRelaxAfterFails`/`regimeSuppressMinutes` gate the relax/loopback-guard
-fallback. None of these config keys, nor anything a regime does at runtime,
-is ever written back to `user-config.json` or pushed to Supabase.
-
-| Field | Default | Description |
-|---|---|---|
-| `regimeDetectionEnabled` | `true` | Master switch for regime detection + overlay |
-| `regimeSlowCutoff` | `15` | Median degenScore below this → `slow` |
-| `regimeHotCutoff` | `45` | Median degenScore at/above this → `hot` |
-| `regimeRelaxAfterFails` | `3` | Consecutive no-deploy screening cycles before force-relaxing to `normal` |
-| `regimeSuppressMinutes` | `120` | How long the regime just relaxed out of is blocked from being re-entered |
 
 ### Schedule
 
@@ -653,8 +634,8 @@ There is currently no empty-string disable path for HiveMind; blank values fall 
 `integrations/supabase-config.js` can sync `user-config.json` to/from a Supabase
 key-value table. **The agent only ever pulls** — on startup and every 15
 minutes (`startSupabaseConfigBackgroundSync`). Nothing the agent decides at
-runtime (including regime overlay changes — see above) is ever pushed
-upstream; Supabase is the operator's source of truth, not a shared scratchpad.
+runtime is ever pushed upstream; Supabase is the operator's source of truth,
+not a shared scratchpad.
 
 Publishing a new baseline is an explicit operator action:
 
@@ -701,13 +682,9 @@ flowchart TD
 
     subgraph SCREEN["Screening Cycle — SCREENER role"]
         direction TB
-        S1["getTopCandidates()"] --> S2{"classifyRegime()<br/>market decision tree"}
-        S2 -->|"regime changed<br/>(and not suppressed)"| S3["computeRegimeOverlay()<br/>bounded + ratcheted, live config only"]
-        S2 -->|"unchanged or suppressed"| S4
-        S3 --> S4["Hard filters:<br/>hysteresis · TVL decline ·<br/>token-age window · cooldowns"]
+        S1["getTopCandidates()"] --> S4["Hard filters:<br/>hysteresis · TVL decline ·<br/>token-age window · cooldowns"]
         S4 --> S5["Per-candidate recon:<br/>smart wallets · narrative · token info"]
         S5 --> S6["agentLoop() — LLM reasons,<br/>picks a candidate, calls deploy_position"]
-        S6 -->|"no deploy, N cycles in a row"| S7["noteScreeningResult()<br/>relax to normal + suppress regime"]
     end
 
     subgraph MANAGE["Management Cycle — MANAGER role"]
@@ -732,65 +709,6 @@ flowchart TD
     STATE -.->|"feeds next cycle"| M1
 ```
 
-### Market regime state machine
-
-Re-evaluated once per screening cycle (30 min) against that cycle's candidate
-set. On a transition, `computeRegimeOverlay()` derives a **bounded,
-ratcheted** config delta from the operator's own baseline (`user-config.json`
-/ Supabase) — never an absolute value, and applied to the **live in-memory
-config only**. Screening bars move both ways inside relative clamps; risk
-keys (`deployAmountSol`, `positionSizePct`, `stopLossPct`) can only ever move
-toward *less* exposure than baseline, never more. `normal` is always an exact
-no-op — the operator's baseline stands untouched.
-
-A second, independent path exists purely to recover from a regime that
-starved itself of the candidates it would need to reclassify: after
-`regimeRelaxAfterFails` (default 3) consecutive no-deploy screening cycles,
-the active regime force-relaxes to `normal` and is **suppressed** from being
-re-entered for `regimeSuppressMinutes` (default 120) — without that
-suppression, relax → re-detect the same regime → tighten → starve → relax
-would repeat forever.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Normal: first boot (baseline, no overlay)
-
-    Slow --> Normal: median degenScore >= slowCutoff (15)
-    Normal --> Slow: median degenScore < slowCutoff (15)
-    Normal --> Hot: median degenScore >= hotCutoff (45)
-    Hot --> Normal: median degenScore < hotCutoff (45)
-    Slow --> Hot: score jumps >= hotCutoff in one cycle
-    Hot --> Slow: score drops < slowCutoff in one cycle
-
-    Slow --> Normal: 3 consecutive no-deploy cycles\n(force relax + suppress Slow)
-    Hot --> Normal: 3 consecutive no-deploy cycles\n(force relax + suppress Hot)
-
-    state Normal {
-        direction LR
-        [*] --> N_applied
-        N_applied: no overlay — operator baseline stands exactly
-    }
-    state Slow {
-        direction LR
-        [*] --> S_applied
-        S_applied: screening LOOSER (0.4-1x baseline)\nsize/stopLoss RATCHETED DOWN only\n(never above baseline)
-    }
-    state Hot {
-        direction LR
-        [*] --> H_applied
-        H_applied: screening TIGHTER (1-3x baseline)\nsize/stopLoss RATCHETED DOWN only\n(never above baseline, volatility = smaller bets)
-    }
-
-    note right of Slow
-        Re-entry blocked for regimeSuppressMinutes
-        immediately after a relax-out
-    end note
-    note right of Hot
-        Re-entry blocked for regimeSuppressMinutes
-        immediately after a relax-out
-    end note
-```
-
 ### Position lifecycle
 
 Covers every path a position can take from deploy attempt to close — the
@@ -805,7 +723,7 @@ stateDiagram-v2
     Deploying --> Rejected: guard blocks\n(repeat-deploy cooldown, TVL decline,\ntoken-age window, hysteresis)
     Rejected --> [*]
 
-    Deploying --> Open: runSafetyChecks passes\n(guard #5 may taper size + tighten stop-loss)
+    Deploying --> Open: runSafetyChecks passes\n(guard #6 may taper size + tighten stop-loss)
 
     state Open {
         [*] --> InRange
@@ -819,7 +737,7 @@ stateDiagram-v2
     InRange --> Closed_LowYield: fee_per_tvl_24h < minFeePerTvl24h\nAND age >= minAgeBeforeYieldCheck
     InRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
     OutOfRange --> Closed_StopLoss: pnl_pct <= effective stopLossPct
-    OutOfRange --> Closed_FastExit: pnl_pct <= stopLossPct * fastExitFraction\n(guard #6 — fires before the full OOR wait)
+    OutOfRange --> Closed_FastExit: pnl_pct <= stopLossPct * fastExitFraction\n(guard #8 — fires before the full OOR wait)
     OutOfRange --> Closed_PumpedAbove: active_bin > upper_bin + outOfRangeBinsToClose
     OutOfRange --> Closed_OORWait: minutes_out_of_range >= outOfRangeWaitMinutes
     Open --> Closed_Manual: /close command, or LLM decision\n(position instruction condition met)
@@ -834,53 +752,6 @@ stateDiagram-v2
 
     Recorded: recordPerformance() -> lessons.js + pool-memory.json
     Recorded --> [*]
-```
-
-### Regime change ↔ open positions
-
-How a regime flip touches both the *next* deploy and *already-open*
-positions in the same pass — there is no per-position snapshotting, so a
-downshift (e.g. Hot → Slow) retroactively tightens exit rules on positions
-opened under the old regime. Note the config mutation is live-config-only:
-nothing here touches `user-config.json` or Supabase.
-
-```mermaid
-sequenceDiagram
-    participant SC as Screening Cron (30m)
-    participant Run as runScreeningCycle
-    participant Reg as classifyRegime + regime library
-    participant Ov as regime-overlay.js
-    participant MC as Management Cron (10m)
-    participant Pos as Open Positions
-
-    SC->>Run: trigger
-    Run->>Run: getTopCandidates()
-    Run->>Reg: classifyRegime(candidates)
-    alt regime changed, not suppressed, e.g. Normal to Hot
-        Run->>Reg: isRegimeSuppressed("hot")?
-        Reg-->>Run: false — proceed
-        Run->>Ov: readBaseline() + computeRegimeOverlay("hot", baseline)
-        Ov-->>Run: bounded, ratcheted delta (deploy size/stopLoss never above baseline)
-        Run->>Run: applyOverlayToLiveConfig() — config.* mutated IN MEMORY ONLY
-        Run-->>Run: decision-log "regime_change" + Telegram notice ("in-memory only")
-        Note over Run: deployAmount/strategy recomputed AFTER<br/>this point — same-cycle effect
-        Run->>Run: deploy using Hot overlay's size/thresholds
-    else regime changed but suppressed
-        Run->>Run: stay on current regime, log suppression
-    else regime unchanged
-        Run->>Run: deploy using current regime's overlay
-    end
-
-    opt 3 consecutive no-deploy cycles
-        Run->>Reg: noteRegimeRelax(activeRegime, suppressMinutes)
-        Reg-->>Run: activeRegime suppressed; fail counter reset
-        Run->>Ov: computeRegimeOverlay("normal", baseline) — empty overlay
-        Run->>Run: live config reverts to operator baseline
-    end
-
-    MC->>Pos: getMyPositions() (independent 10m cadence)
-    Pos->>Pos: read config.management.stopLossPct/<br/>takeProfitPct fresh, every tick
-    Note over Pos: Retroactive — a position opened under the<br/>OLD regime is now evaluated against the<br/>NEW regime's exit rules. A restart or a<br/>Supabase pull restores the operator's baseline.
 ```
 
 ### File map
@@ -911,11 +782,6 @@ state/
   signal-weights.js   Darwinian signal weighting
   position-log.js     Deploy/close events → Supabase
 
-regime/
-  market-regime.js         classifyRegime() decision tree
-  market-regime-library.js Active regime pointer, relax/suppression state
-  regime-overlay.js        Bounded, ratcheted config overlay — the only code path that changes config for a regime
-
 integrations/
   telegram.js         Telegram bot: polling + notifications
   hivemind.js         Agent Meridian HiveMind sync
@@ -924,12 +790,16 @@ integrations/
 
 guards/
   01-token-age-window.js       through
-  07-avoid-pin.js              — the 7 post-mortem safety guards, one file
-                                 per guard, numbered by execution order
-  08-weekend-fresh-repeat.js   — caps a token to one deploy per Sat 18:00->
+  09-avoid-pin.js              — 9 post-mortem safety guards, one file
+                                 per guard, numbered by true execution order
+                                 across the full lifecycle (screen -> deploy
+                                 -> manage -> close)
+  05-weekend-fresh-repeat.js   — caps a token to one deploy per Sat 18:00->
                                  Mon 04:00 WIB session if it started fresh
                                  (<weekendGuardMaxFreshAgeHours old) that
                                  session; see CHANGELOG for the data behind it
+  07-token-name-penalty.js     — opt-in size penalty for deploys whose token
+                                 name matches an operator-defined pattern
 
 util/
   envcrypt.js         .env encryption

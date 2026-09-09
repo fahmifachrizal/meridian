@@ -9,7 +9,7 @@
  * whatever the implementation happens to produce.
  *
  * Scope (documented, not hidden): the evaluator replays guard #1
- * (token-age window), guard #2 (repeat-deploy cooldown), and guard #5
+ * (token-age window), guard #2 (repeat-deploy cooldown), and guard #6
  * (repeat-deploy size taper + tightened stop-loss) for the deploy-gate
  * decision, and rules 1/2/4 of getDeterministicCloseRule for the exit
  * (via each position's recorded `timeline` — rules 3/5/6 need
@@ -51,7 +51,7 @@ function approx(a, b, tolerance = 0.01) {
  * PINNED config for the per-rule logic assertions below.
  *
  * These expectations are hand-computed arithmetic on specific thresholds
- * (e.g. "guard #5 halves the stop-loss" → -35 × 0.5 = -17.5). Reading those
+ * (e.g. "guard #6 halves the stop-loss" → -35 × 0.5 = -17.5). Reading those
  * thresholds from the LIVE config made the suite fail every time the operator
  * legitimately retuned their risk settings — a false alarm that says nothing
  * about whether the evaluator's logic is correct. Pinning them here keeps
@@ -109,8 +109,8 @@ section("wouldDeployUnderConfig — deploy gate (guards #1/#2/#5)");
   const rako = positionByPool("RAKO-SOL");
   const rakoResult = wouldDeployUnderConfig(BENCH_CONFIG, rako, poolMemory);
   check("RAKO (seq=2, pool age 5.11h) not blocked by guard #1 or #2", rakoResult.deploy === true && rakoResult.blockedBy.length === 0);
-  check("RAKO size tapered to 0.36 SOL by guard #5 (2nd deploy, still in early window)", approx(rakoResult.sizeSol, 0.36, 0.001));
-  check("RAKO stop-loss tightened to -17.5% by guard #5", approx(rakoResult.stopLossOverride, -17.5, 0.001));
+  check("RAKO size tapered to 0.36 SOL by guard #6 (2nd deploy, still in early window)", approx(rakoResult.sizeSol, 0.36, 0.001));
+  check("RAKO stop-loss tightened to -17.5% by guard #6", approx(rakoResult.stopLossOverride, -17.5, 0.001));
 }
 
 // ─── simulateExitUnderConfig ──────────────────────────────────────
@@ -201,9 +201,9 @@ section("evaluatePosition — deploy + exit + SOL/USD conversion");
   const worm = positionByPool("WORM-SOL");
   // Isolate the exit-replay improvement from the deploy-gate: guard #2
   // would otherwise block WORM's 3rd deploy entirely (pnl=0). Disabling it
-  // here demonstrates guard #6 (fast-exit)'s benefit specifically, in
+  // here demonstrates guard #8 (fast-exit)'s benefit specifically, in
   // dollar terms — not just direction.
-  const guard6OnlyConfig = {
+  const guard8OnlyConfig = {
     ...BENCH_CONFIG,
     management: { ...BENCH_CONFIG.management, repeatDeployCooldownEnabled: false, repeatDeploySizeTaperEnabled: false },
   };
@@ -212,8 +212,8 @@ section("evaluatePosition — deploy + exit + SOL/USD conversion");
   // a finer per-minute granularity than the coarse-timeline replay tested
   // above found (rule 4, fast-exit) — a real, expected behavior difference
   // between the two exit-replay functions, not a regression.
-  const wormEval = evaluatePosition(guard6OnlyConfig, worm, poolMemory);
-  check("WORM deployed under guard-6-only config", wormEval.deployed === true);
+  const wormEval = evaluatePosition(guard8OnlyConfig, worm, poolMemory);
+  check("WORM deployed under guard-8-only config", wormEval.deployed === true);
   check("WORM simulated pnl_usd ≈ -15.67 (vs actual -19.60)", approx(wormEval.pnl_usd, -15.6674, 0.01));
   check("WORM simulated pnl_sol ≈ -0.212", approx(wormEval.pnl_sol, -0.2121, 0.001));
   check("WORM simulation is a real improvement over actual history", wormEval.pnl_usd > worm.outcome.pnl_usd);

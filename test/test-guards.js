@@ -9,7 +9,7 @@ import { repoPath } from "../repo-root.js";
 import { createSuite, withRestoredFile } from "./lib/test-kit.js";
 import { getTokenAgeWindowRejectReason } from "../guards/01-token-age-window.js";
 import { checkRejectionHysteresis } from "../guards/03-rejection-hysteresis.js";
-import { getWeekendSessionBoundsWIB, isWeekendNightWIB, getWeekendFreshRepeatRejectReason } from "../guards/08-weekend-fresh-repeat.js";
+import { getWeekendSessionBoundsWIB, isWeekendNightWIB, getWeekendFreshRepeatRejectReason } from "../guards/05-weekend-fresh-repeat.js";
 import {
   recordRejection,
   getRecentRejectionCount,
@@ -103,8 +103,8 @@ withRestoredFile(POOL_MEMORY_FILE, () => {
 });
 console.log("  (restored pool-memory.json to pre-test content)");
 
-// ─── Guard #8: weekend fresh-token repeat block ─────────────────
-section("Guard #8: weekend fresh-token repeat block (Sat 18:00 -> Mon 04:00 WIB)");
+// ─── Guard #5: weekend fresh-token repeat block ─────────────────
+section("Guard #5: weekend fresh-token repeat block (Sat 18:00 -> Mon 04:00 WIB)");
 {
   const s = { weekendGuardEnabled: true, weekendGuardMaxFreshAgeHours: 6, weekendGuardStartDow: 6, weekendGuardStartHour: 18, weekendGuardEndDow: 1, weekendGuardEndHour: 4 };
   // Build a Date whose WIB (UTC+7) wall-clock reads y-m-d h:mi.

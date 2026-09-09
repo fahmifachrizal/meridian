@@ -1,5 +1,5 @@
 /**
- * Guard #7 — AVOID-tagged pinned lessons.
+ * Guard #9 — AVOID-tagged pinned lessons.
  *
  * Fires last in the position lifecycle, inside lessons.js's
  * recordPerformance() at close time — advisory, not a hard filter. Pins a

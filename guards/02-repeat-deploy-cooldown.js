@@ -1,4 +1,20 @@
-import { isPoolOnCooldown, isBaseMintOnCooldown } from "../state/pool-memory.js";
+import {
+  isPoolOnCooldown,
+  isBaseMintOnCooldown,
+  getPoolCooldownRemainingMs,
+  getBaseMintCooldownRemainingMs,
+} from "../state/pool-memory.js";
+
+/**
+ * Formats a remaining-cooldown duration as a negative, human-readable
+ * suffix: " (-Xhr)" for >=1 hour, " (-Xmn)" for <1 hour. Rounds up
+ * (Math.ceil) so "1 minute left" never displays as "-0mn".
+ */
+function formatRemaining(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  const totalMinutes = Math.ceil(ms / 60_000);
+  return totalMinutes < 60 ? ` (-${totalMinutes}mn)` : ` (-${Math.ceil(totalMinutes / 60)}hr)`;
+}
 
 /**
  * Guard #2 — repeat-deploy cooldown.
@@ -13,10 +29,12 @@ import { isPoolOnCooldown, isBaseMintOnCooldown } from "../state/pool-memory.js"
  */
 export function checkRepeatDeployCooldown(poolAddress, baseMint) {
   if (isPoolOnCooldown(poolAddress)) {
-    return { blocked: true, reason: "pool cooldown active" };
+    const remaining = formatRemaining(getPoolCooldownRemainingMs(poolAddress));
+    return { blocked: true, type: "pool", reason: `pool cooldown active${remaining}` };
   }
   if (isBaseMintOnCooldown(baseMint)) {
-    return { blocked: true, reason: "token cooldown active" };
+    const remaining = formatRemaining(getBaseMintCooldownRemainingMs(baseMint));
+    return { blocked: true, type: "token", reason: `token cooldown active${remaining}` };
   }
-  return { blocked: false, reason: null };
+  return { blocked: false, type: null, reason: null };
 }

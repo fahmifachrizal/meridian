@@ -1,7 +1,7 @@
 /**
  * Single source of truth for how user-config.json's flat keys map onto
  * grouped sections on disk — screening / management / strategy / schedule /
- * llm / darwin / hiveMind / api / pnl / opportunity / regime / gmgn / risk /
+ * llm / darwin / hiveMind / api / pnl / opportunity / gmgn / risk /
  * connection, mirroring core/config.js's own section names 1:1.
  *
  * Design: the on-disk field name for every key is UNCHANGED from its
@@ -97,11 +97,15 @@ export const KEY_GROUPS = {
   maxTvlDeclinePctForDeploy: "management",
   fastExitOnOorEnabled: "management",
   fastExitStopLossFraction: "management",
+  priceTickLogEnabled: "management",
+  priceTickHistoryDeployCount: "management",
   avoidPinThresholdPct: "management",
   avoidPinMinDeploys: "management",
   repeatDeploySizeTaperEnabled: "management",
   repeatDeploySizeTaperPct: "management",
   repeatDeployStopLossFraction: "management",
+  tokenNamePenaltiesEnabled: "management",
+  tokenNamePenalties: "management",
   minSolToOpen: "management",
   deployAmountSol: "management",
   gasReserve: "management",
@@ -184,13 +188,6 @@ export const KEY_GROUPS = {
   degenTargetFeeRatio: "opportunity",
   degenTargetLiquidity: "opportunity",
 
-  // ── regime ──
-  regimeDetectionEnabled: "regime",
-  regimeSlowCutoff: "regime",
-  regimeHotCutoff: "regime",
-  regimeRelaxAfterFails: "regime",
-  regimeSuppressMinutes: "regime",
-
   // ── gmgn ──
   gmgnApiKey: "gmgn",
   gmgnBaseUrl: "gmgn",
@@ -254,7 +251,7 @@ export function groupConfig(flat) {
   }
   const orderedGroupNames = [
     "screening", "management", "strategy", "schedule", "llm", "darwin",
-    "hiveMind", "api", "pnl", "opportunity", "regime", "gmgn", "risk", "connection",
+    "hiveMind", "api", "pnl", "opportunity", "gmgn", "risk", "connection",
   ];
   const result = { ...top };
   for (const name of orderedGroupNames) {

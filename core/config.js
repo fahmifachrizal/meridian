@@ -156,19 +156,36 @@ export const config = {
     // Pre-deploy TVL/mcap decline check (guard #4)
     maxTvlSnapshotAgeHours:    u.maxTvlSnapshotAgeHours    ?? 4,
     maxTvlDeclinePctForDeploy: u.maxTvlDeclinePctForDeploy ?? 20,
-    // Fast OOR + negative-PnL exit (guard #6)
+    // Fast OOR + negative-PnL exit (guard #8)
     fastExitOnOorEnabled:    u.fastExitOnOorEnabled    ?? true,
     fastExitStopLossFraction: u.fastExitStopLossFraction ?? 0.5,
-    // AVOID-tagged pinned lessons (guard #7)
+    // Per-position price/PnL history logging (opt-in) — see
+    // state/price-tick-log.js. Each open position's full deploy-to-close
+    // tick history is kept (uncapped while open); on close it's archived
+    // into a FIFO of the priceTickHistoryDeployCount most recently closed
+    // deploys (oldest evicted, not oldest ticks trimmed). Separately, a
+    // permanent snapshot starts once a position's loss crosses
+    // stopLossPct * fastExitStopLossFraction (the exact same threshold
+    // guard #8 uses for a fast exit — reused here, not duplicated).
+    priceTickLogEnabled:         u.priceTickLogEnabled         ?? false,
+    priceTickHistoryDeployCount: u.priceTickHistoryDeployCount ?? 10,
+    // AVOID-tagged pinned lessons (guard #9)
     avoidPinThresholdPct: u.avoidPinThresholdPct ?? -10,
     avoidPinMinDeploys:   u.avoidPinMinDeploys   ?? 2,
-    // Repeat-deploy size taper + tightened stop-loss (guard #5) — a 2nd+ deploy
+    // Repeat-deploy size taper + tightened stop-loss (guard #6) — a 2nd+ deploy
     // into the same pool while it's still within the early-momentum window
     // (screening.tokenEarlyWindowMaxHours) is strictly higher variance than the
     // 1st, so it risks less capital and gets cut faster if wrong.
     repeatDeploySizeTaperEnabled: u.repeatDeploySizeTaperEnabled ?? true,
     repeatDeploySizeTaperPct: Array.isArray(u.repeatDeploySizeTaperPct) ? u.repeatDeploySizeTaperPct : [0.6, 0.4],
     repeatDeployStopLossFraction: u.repeatDeployStopLossFraction ?? 0.5,
+    // Token-name pattern size penalty (guard #7) — opt-in, operator-defined
+    // list of { pattern, penaltyPct } rules. pattern is matched as a
+    // case-insensitive substring against the pool/token name; penaltyPct
+    // (0-100) cuts the deploy size by that much when it matches (50 = half
+    // size). Only the first matching rule applies.
+    tokenNamePenaltiesEnabled: u.tokenNamePenaltiesEnabled ?? false,
+    tokenNamePenalties: Array.isArray(u.tokenNamePenalties) ? u.tokenNamePenalties : [],
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
@@ -196,7 +213,7 @@ export const config = {
     // unbounded slice of the portfolio.
     insuranceMaxPoolPct:       u.insuranceMaxPoolPct       ?? 30,
 
-    // Guard #8 — weekend fresh-token repeat block (see guards/08-weekend-
+    // Guard #5 — weekend fresh-token repeat block (see guards/05-weekend-
     // fresh-repeat.js for the data behind this). Caps a base_mint to one
     // deploy per weekend session, but only when that token's FIRST deploy
     // the session was into a pool under weekendGuardMaxFreshAgeHours old —
@@ -314,24 +331,6 @@ export const config = {
     // active-TVL floor (≈ minTvl) so it acts as a dust floor, not a stretch goal — the
     // screening minTvl filter already removes tiny pools.
     targetLiquidity: Number(u.degenTargetLiquidity ?? 20000),
-  },
-
-  // ─── Market regime detection (decision-tree config auto-fork) ──
-  regime: {
-    enabled: u.regimeDetectionEnabled ?? true,
-    // classifyRegime()'s median-degenScore cutoffs — below slowCutoff -> "slow",
-    // at/above hotCutoff -> "hot", otherwise "normal". Re-evaluated once per
-    // screening cycle against that cycle's getTopCandidates() result.
-    slowCutoff: Number(u.regimeSlowCutoff ?? 15),
-    hotCutoff: Number(u.regimeHotCutoff ?? 45),
-    // Consecutive no-deploy screening cycles before force-relaxing back to
-    // "normal" — recovers from the tightened-regime feedback loop where a
-    // strict profile starves classifyRegime() of candidates to reclassify from.
-    relaxAfterFails: Number(u.regimeRelaxAfterFails ?? 3),
-    // After relaxing out of a regime, block re-entry into *that same* regime
-    // for this long, so the agent cannot oscillate tighten→starve→relax→repeat.
-    // Other regimes stay reachable, so adaptation is not frozen.
-    suppressMinutes: Number(u.regimeSuppressMinutes ?? 120),
   },
 
   // ─── GMGN (fee source for minTokenFeesSol gate) ──────────────
